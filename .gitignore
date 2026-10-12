@@ -1,0 +1,10 @@
+.pio/
+.platformio/
+.venv/
+.venv313/
+sdkconfig
+sdkconfig.old
+sdkconfig.*
+!sdkconfig.defaults
+managed_components/
+__pycache__/
