@@ -93,7 +93,8 @@ class CollectionGuiTests(unittest.TestCase):
             data = encode_asset(Image.new("RGB", (2, 2), "red"))
             for count in (1, 2):
                 window.request_upload.emit(data)
-                self.assertTrue(wait_for(lambda: len(window.snapshot.scenes) == count and not window.cache_loading))
+                self.assertTrue(wait_for(lambda: len(window.snapshot.scenes) == count
+                                        and len(window.scene_previews) == count and not window.cache_loading))
             self.assertEqual(len(window.scene_previews), 2)
             with patch.object(window.device_worker.client, "read_scene", side_effect=AssertionError("Selection must not read USB")):
                 for row in (0, 1, 0, 1, 0):

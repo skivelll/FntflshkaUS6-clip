@@ -192,6 +192,33 @@ class SmokeCheck(QObject):
                 assert list(w.library_folder.glob("before-restore-*.fclip"))
                 assert self.reads == 0
                 self.results.append("library_restore_with_prebackup_no_reads")
+                w.library_dialog.close()
+                from .ui.playlist_dialog import PlaylistDialog
+                self.playlist_dialog = PlaylistDialog(w)
+                self.playlist_dialog.show()
+                self.step = 19
+            elif self.step == 19 and not self.playlist_dialog.pending:
+                from .device.playlist import Playlist
+                dialog = self.playlist_dialog
+                assert dialog.save_button.isEnabled() and dialog.scenes.count() == 2
+                self.playlist_value = Playlist(True, 3000, tuple(s.id for s in reversed(w.snapshot.scenes)), 5)
+                dialog.pending = True
+                w.request_playlist.emit((self.playlist_value, w.snapshot))
+                self.step = 20
+            elif self.step == 20 and not self.playlist_dialog.pending:
+                dialog = self.playlist_dialog
+                assert dialog.enabled.isChecked() and dialog.interval.value() == 3
+                assert dialog.interval_row.isVisible() and dialog.transition.currentIndex() == 5
+                assert all(not dialog.scenes.item(i).icon().isNull() for i in range(dialog.scenes.count()))
+                dialog.interval_up.click()
+                assert dialog.interval.value() == 4
+                dialog.interval_down.click()
+                assert dialog.interval.value() == 3
+                assert dialog.scenes.item(0).data(Qt.UserRole) == self.playlist_value.ids[0]
+                assert self.reads == 0
+                self.results.append("playlist_ack_readback_order_no_asset_reads")
+                dialog.grab().save(str(self.report.with_name(self.report.stem + "-playlist.png")))
+                dialog.close()
                 self.finish()
         except Exception as error:
             log.exception("Bundled smoke failed")

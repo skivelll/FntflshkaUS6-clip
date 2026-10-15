@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "usb_service.h"
 #include "wire.h"
+#include "playlist.h"
 
 static const char *TAG = "USB";
 #define FIRMWARE_NAME "FntflshkaUS6 clip"
@@ -37,6 +38,17 @@ bool usb_service_show_active(void)
                  scene.width, scene.height);
     else
         ESP_LOGE(TAG, "active scene=%u read failed", (unsigned)scene.id);
+    return drawn;
+}
+
+bool usb_service_show_transition(void)
+{
+    ManifestScene scene;
+    FILE *file = storage_open_active(&scene);
+    if (!file) return false;
+    const bool drawn = display_draw_transition(file, scene.width, scene.height,
+                                               playlist_get()->transition);
+    fclose(file);
     return drawn;
 }
 
@@ -66,13 +78,26 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
     ProtocolError error = ERR_NONE;
     const uint8_t *p = request->payload;
     const size_t n = request->length;
+    // Explicit writes/manual selection stop playback first. No automatic retries.
+    if (playlist_get()->enabled &&
+        ((request->command == CMD_UPLOAD_BEGIN && n == 12) ||
+         (request->command == CMD_SET_ACTIVE_SCENE && n == 4) ||
+         (request->command == CMD_DELETE_SCENE && n == 4))) {
+        Playlist stopped = *playlist_get();
+        stopped.enabled = false;
+        error = (ProtocolError)playlist_set(&stopped, now_ms());
+        if (error != ERR_NONE) {
+            send_response(request->sequence, request->command, error, NULL, 0);
+            return;
+        }
+    }
     switch (request->command) {
     case CMD_HELLO: {
         if (n != 0) { error = ERR_BAD_LENGTH; break; }
         const size_t name_length = sizeof(FIRMWARE_NAME) - 1;
         memcpy(reply, FIRMWARE_NAME, name_length);
         reply[name_length] = 1; // Firmware major
-        reply[name_length + 1] = 2; // Firmware minor: scene metadata extension
+        reply[name_length + 1] = 4; // Firmware minor: playlist transitions
         reply_size = name_length + 2;
         break;
     }
@@ -85,7 +110,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         wire_put16(reply + 2, DISPLAY_WIDTH);
         wire_put16(reply + 4, DISPLAY_HEIGHT);
         reply[6] = ASSET_PIXEL_RGB565;
-        reply[7] = 3; // bit 0 = READ_SCENE; bit 1 = scene title/order metadata.
+        reply[7] = 15; // READ_SCENE, metadata, playlist, transition modes.
         wire_put32(reply + 8, 4U * 1024U * 1024U);
         wire_put32(reply + 12, 0); // Physical size is not reliably distinct from configured size.
         wire_put32(reply + 16, (uint32_t)total);
@@ -199,6 +224,40 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         memcpy(reply, p, n);
         reply_size = n;
         break;
+    case CMD_GET_PLAYLIST:
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        playlist_encode(playlist_get(), reply);
+        reply_size = PLAYLIST_BYTES;
+        break;
+    case CMD_GET_TRANSITION:
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        reply[0] = playlist_get()->transition;
+        reply_size = 1;
+        break;
+    case CMD_SET_PLAYLIST:
+    case CMD_SET_PLAYLIST_EFFECT: {
+        Playlist next;
+        const bool with_effect = request->command == CMD_SET_PLAYLIST_EFFECT;
+        if (n != PLAYLIST_BYTES + (n >= 3 ? p[2] * 4U : 0) + (with_effect ? 1U : 0U) ||
+            !playlist_decode(p, PLAYLIST_BYTES, &next)) { error = ERR_BAD_LENGTH; break; }
+        if (with_effect) {
+            next.transition = p[n - 1];
+            if (next.transition > 5) { error = ERR_BAD_LENGTH; break; }
+        }
+        for (size_t i = 0; i < next.count; ++i) {
+            const ManifestScene *scene = manifest_find(storage_manifest(), next.ids[i]);
+            if (!scene || scene->checksum != wire_u32(p + PLAYLIST_BYTES + i * 4)) {
+                error = ERR_BAD_STATE; break;
+            }
+        }
+        if (error == ERR_NONE) error = (ProtocolError)playlist_set(&next, now_ms());
+        if (error == ERR_NONE && next.enabled) {
+            *fallback_mode = !usb_service_show_transition();
+            playlist_pause(now_ms());
+            if (*fallback_mode) modes_init(now_ms());
+        }
+        break;
+    }
     default:
         error = ERR_INVALID_COMMAND;
         break;

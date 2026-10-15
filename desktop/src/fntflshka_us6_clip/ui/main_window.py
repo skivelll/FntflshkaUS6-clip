@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
     request_reconnect = Signal()
     request_collection = Signal(object)
     request_restore = Signal(object)
+    request_playlist = Signal(object)
 
     def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None, library_folder=None):
         super().__init__()
@@ -74,6 +75,9 @@ class MainWindow(QMainWindow):
         self.library_button = QPushButton("Библиотека…")
         self.library_button.clicked.connect(self.open_library)
         header.addWidget(self.library_button)
+        self.playlist_button = QPushButton("Плейлист…")
+        self.playlist_button.clicked.connect(self.open_playlist)
+        header.addWidget(self.playlist_button)
         header.addStretch()
         self.status = QLabel("● демо-устройство" if mock else "● заколка не найдена")
         self.status.setObjectName("status")
@@ -224,6 +228,7 @@ class MainWindow(QMainWindow):
             self.request_reconnect.connect(self.device_worker.reconnect)
             self.request_collection.connect(self.device_worker.export_collection)
             self.request_restore.connect(self.device_worker.restore_collection)
+            self.request_playlist.connect(self.device_worker.playlist_action)
             self.device_worker.collection_ready.connect(self.on_collection_ready)
             self.device_worker.collection_failed.connect(self.on_collection_failed)
             self.device_worker.restore_done.connect(self.on_collection_restored)
@@ -328,6 +333,8 @@ class MainWindow(QMainWindow):
 
     def update_scene_actions(self, *args):
         self.library_button.setEnabled(not self.busy and not self.closing)
+        self.playlist_button.setEnabled(bool(self.snapshot and self.snapshot.capabilities.supports_playlist)
+                                        and not self.busy and not self.cache_loading and not self.closing)
         self.reconnect_button.setEnabled(not self.busy and not self.closing and not self.cache_loading)
         scene = self.selected_scene()
         available = scene is not None and not self.busy and not self.closing and not self.cache_loading
@@ -364,6 +371,14 @@ class MainWindow(QMainWindow):
             dialog.destroyed.connect(lambda *_: setattr(self, "library_dialog", None) if self.library_dialog is dialog else None)
         self.library_dialog.show()
         self.library_dialog.raise_()
+
+    def open_playlist(self):
+        if not self.snapshot or not self.snapshot.capabilities.supports_playlist or self.busy:
+            return
+        from .playlist_dialog import PlaylistDialog
+        dialog = PlaylistDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def export_to_library(self, title, selected_id):
         if self.busy or self.cache_loading or self.snapshot is None or self.device_thread is None:

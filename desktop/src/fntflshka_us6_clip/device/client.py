@@ -15,6 +15,42 @@ class DeviceClient:
     def __init__(self, transport):
         self.transport = transport
 
+    def get_playlist(self):
+        from .playlist import Playlist
+        value = Playlist.decode(self.transport.request(COMMANDS["get_playlist"]))
+        caps = Capabilities.decode(self.transport.request(COMMANDS["capabilities"]))
+        if caps.supports_transitions:
+            effect = self.transport.request(COMMANDS["get_transition"])
+            if len(effect) != 1 or effect[0] > 5:
+                raise ValueError("Неверный переход от заколки.")
+            value = replace(value, transition=effect[0])
+        return value
+
+    def set_playlist(self, value, baseline):
+        before = self.snapshot()
+        if not before.capabilities.supports_playlist:
+            raise ValueError("Для автономного плейлиста нужна firmware 1.3.")
+        if before.device_id != baseline.device_id or before.port != baseline.port:
+            raise ValueError("Подключение изменилось. Открой плейлист заново.")
+        records = []
+        for scene_id in value.ids:
+            expected = next((s for s in baseline.scenes if s.id == scene_id), None)
+            if expected is None:
+                raise ValueError("Сцена удалена. Убери её из плейлиста.")
+            self._check_scene(before, scene_id, expected.checksum)
+            records.append(expected.checksum)
+        payload = value.encode() + b"".join(struct.pack("<I", crc) for crc in records)
+        command = COMMANDS["set_playlist"]
+        if before.capabilities.supports_transitions:
+            command = COMMANDS["set_playlist_effect"]
+            payload += bytes([value.transition])
+        elif value.transition:
+            raise ValueError("Для переходов нужна firmware 1.4.")
+        self.transport.request(command, payload, timeout=10)
+        if self.get_playlist() != value:
+            raise ValueError("Заколка не подтвердила настройки плейлиста.")
+        return self.snapshot()
+
     def snapshot(self):
         version = parse_hello(self.transport.request(COMMANDS["hello"], timeout=2))
         self.transport.firmware_version = version

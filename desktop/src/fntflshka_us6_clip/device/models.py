@@ -26,6 +26,14 @@ class Capabilities:
     def supports_scene_metadata(self):
         return bool(self.reserved & 2)
 
+    @property
+    def supports_playlist(self):
+        return bool(self.reserved & 4)
+
+    @property
+    def supports_transitions(self):
+        return bool(self.reserved & 8)
+
     @classmethod
     def decode(cls, data):
         if len(data) != 32:

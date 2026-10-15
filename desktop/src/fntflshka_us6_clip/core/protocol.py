@@ -17,6 +17,8 @@ COMMANDS = {
     "upload_begin": 5, "upload_chunk": 6, "upload_end": 7,
     "delete": 8, "activate": 9, "ping": 10, "read_scene": 11,
     "scene_details": 12, "rename": 13, "reorder": 14,
+    "get_playlist": 15, "set_playlist": 16,
+    "get_transition": 17, "set_playlist_effect": 18,
 }
 
 

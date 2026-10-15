@@ -23,6 +23,9 @@ Firmware development setup ниже остаётся отдельным workflow
 [Локальная библиотека, экспорт и восстановление коллекций](docs/library.md)
 доступны через кнопку «Библиотека…»; сохранённые коллекции просматриваются без USB.
 
+[Автономный плейлист статичных сцен](docs/playlist.md) на firmware 1.3:
+кнопка «Плейлист…», выбранный порядок и общий интервал; работает без приложения.
+
 ## Windows development (primary workflow)
 
 Use native Windows 10/11, Git for Windows and Python 3.12 or 3.13. Python

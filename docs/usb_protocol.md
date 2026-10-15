@@ -51,7 +51,8 @@ u16, render buffer bytes u16. Applications must use LittleFS free space rather
 than physical Flash size to decide whether content fits.
 
 Capability flag bit 0 advertises READ_SCENE; bit 1 advertises scene metadata
-(GET_SCENE_DETAILS/RENAME_SCENE/REORDER_SCENES); other bits are reserved.
+(GET_SCENE_DETAILS/RENAME_SCENE/REORDER_SCENES); bit 2 advertises autonomous
+playlist GET_PLAYLIST/SET_PLAYLIST (firmware 1.3); other bits are reserved.
 Firmware 1.0 returns zero here and does not implement command 11. This is an
 additive protocol v1 extension: existing frames, commands, response sizes and
 asset format are unchanged. Old hosts may ignore flags. New hosts must check
@@ -100,3 +101,30 @@ asset header and payload CRC. It then renames the temporary file to the
 inactive A/B slot and atomically replaces `manifest.json`. Removing USB before
 END leaves the old active slot intact. On boot, stale temporary files are
 removed; missing or damaged manifest/asset selects compiled fallback content.
+
+Playlist extension (check capability bit 2): GET_PLAYLIST (15) has an empty
+request and returns a 42-byte record. SET_PLAYLIST (16) accepts that record
+followed by count expected asset payload checksums (u32, playlist order), and
+returns an empty ACK. Missing/stale IDs or upload busy return BAD_STATE;
+invalid record/length returns BAD_LENGTH; disk failure returns WRITE_ERROR.
+Do not automatically retry writes.
+
+Record: version u8 (=1), enabled u8 (0/1), count u8 (0–8), reserved u8 (=0),
+interval_ms u32 (1000–86400000), eight IDs u32 (unique 1–8 in the first count
+entries, trailing entries zero), two reserved zero bytes. Enabled requires
+at least one ID. GET excludes checksums. SET validates checksums before commit.
+Runtime ACTIVE is visible through unchanged LIST_SCENES; ticks do not write
+manifest. UPLOAD_BEGIN, SET_ACTIVE_SCENE and DELETE_SCENE stop and persist
+playback before their operation; later failure need not resume it.
+See [playlist behavior and persistence](playlist.md).
+
+Firmware 1.4 optionally advertises capability bit 3: GET_TRANSITION (17), empty
+request, returns one effect byte; SET_PLAYLIST_EFFECT (18) accepts the exact
+SET_PLAYLIST payload plus one trailing effect byte (0–5). It validates and
+atomically commits the whole playlist with its effect. IDs/checksums/length and
+error behavior are the same as command 16; unknown effects return BAD_LENGTH.
+Effects: 0 cut with brief backlight blanking, 1 reveal left-to-right, 2 right-to-left,
+3 top-to-bottom, 4 bottom-to-top, 5 expand from center. Command 15 is unchanged:
+42 bytes, all reserved fields zero. Legacy command 16 selects effect 0. Thus old
+hosts keep their original response layouts. New hosts check bit 3 and use 18 for
+one atomic settings write; do not chain separate interval/effect commits.

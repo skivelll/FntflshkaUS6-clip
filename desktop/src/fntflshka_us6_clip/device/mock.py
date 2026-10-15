@@ -15,7 +15,9 @@ class MockTransport:
 
     def __init__(self, free=None, disconnect_after=None):
         self.caps = mock_capabilities()
-        self.caps = replace(self.caps, reserved=3)
+        self.caps = replace(self.caps, reserved=15)
+        from .playlist import Playlist
+        self.playlist = Playlist()
         if free is not None:
             self.caps = replace(self.caps, storage_free=free)
         self.scenes = []
@@ -32,6 +34,33 @@ class MockTransport:
     def request(self, command, payload=b"", timeout=5):
         if not self.connected:
             raise OSError("Mock disconnect")
+        if command in (5, 8, 9):
+            self.playlist = replace(self.playlist, enabled=False)
+        if command == 15:
+            return self.playlist.encode()
+        if command == 17:
+            return bytes([self.playlist.transition])
+        if command in (16, 18):
+            from .playlist import Playlist
+            try:
+                value = Playlist.decode(payload[:42])
+                if len(payload) != 42 + len(value.ids) * 4 + (command == 18):
+                    raise ValueError("length")
+                if command == 18:
+                    value = replace(value, transition=payload[-1])
+                    value.encode()
+            except (ValueError, struct.error) as error:
+                raise DeviceNack(8) from error
+            if self.upload is not None:
+                raise DeviceNack(9)
+            for index, scene_id in enumerate(value.ids):
+                scene = next((s for s in self.scenes if s.id == scene_id), None)
+                if scene is None or scene.checksum != struct.unpack_from("<I", payload, 42 + index * 4)[0]:
+                    raise DeviceNack(9)
+            self.playlist = value
+            if value.enabled:
+                self.scenes = [replace(s, active=s.id == value.ids[0]) for s in self.scenes]
+            return b""
         if command == 1:
             return FIRMWARE_NAME + b"\x01\x00"
         if command == 2:

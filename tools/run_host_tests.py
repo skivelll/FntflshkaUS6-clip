@@ -27,14 +27,16 @@ def main() -> None:
         "foundation": ["tests/foundation_test.c", "src/wire.c", "src/asset_format.c",
                        "src/protocol.c", "src/manifest.c", "src/upload_guard.c", str(cjson / "cJSON.c")],
         "modes": ["tests/modes_test.c", "src/modes.c", "src/assets.c"],
+        "playlist": ["tests/playlist_test.c", "src/playlist.c", "src/wire.c"],
     }
     with tempfile.TemporaryDirectory(prefix="clip-host-tests-") as temporary:
         for name, sources in suites.items():
             binary = Path(temporary) / (name + (".exe" if os.name == "nt" else ""))
             subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            '-DPLAYLIST_ROOT="."', '-D_POSIX_C_SOURCE=200809L',
                             "-Isrc", "-Itests/stubs", "-I", str(cjson), *sources,
                             "-lm", "-o", str(binary)], cwd=root, check=True)
-            subprocess.run([str(binary)], cwd=root, check=True)
+            subprocess.run([str(binary)], cwd=temporary, check=True)
             print(f"{name}: PASS", flush=True)
 
 

@@ -9,6 +9,7 @@ from ..library.archive import from_snapshot, save
 from ..library.restore import execute as execute_restore, RestoreFailure
 from pathlib import Path
 import uuid
+from dataclasses import replace
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class DeviceWorker(QObject):
     collection_failed = Signal(str)
     restore_done = Signal(object)
     restore_failed = Signal(str)
+    playlist_ready = Signal(object)
+    playlist_failed = Signal(str)
 
     def __init__(self, mock=False):
         super().__init__()
@@ -229,9 +232,14 @@ class DeviceWorker(QObject):
     def export_collection(self, request):
         baseline, title, selected_id = request
         try:
-            if self.client is None or self.client.snapshot() != baseline:
+            if self.client is None:
                 raise ValueError("Список сцен или подключение изменились. Повтори экспорт.")
-            collection = from_snapshot(baseline, self.cache.assets, title, selected_id)
+            fresh = self.client.snapshot()
+            if (fresh.device_id != baseline.device_id or fresh.port != baseline.port or
+                    tuple(replace(s, active=False) for s in fresh.scenes) !=
+                    tuple(replace(s, active=False) for s in baseline.scenes)):
+                raise ValueError("Список сцен или подключение изменились. Повтори экспорт.")
+            collection = from_snapshot(fresh, self.cache.assets, title, selected_id)
             self.collection_ready.emit(collection)
         except Exception as error:
             log.exception("Collection export failed")
@@ -243,6 +251,9 @@ class DeviceWorker(QObject):
         if self.timer:
             self.timer.stop()
         try:
+            if (self.client is not None and self.last is not None and
+                    self.last.capabilities.supports_playlist and self.client.get_playlist().enabled):
+                raise ValueError("Перед восстановлением останови плейлист: «Плейлист…» → снять галочку → сохранить. Затем создай план заново.")
             if self.client is None or self.client.snapshot() != plan.baseline:
                 raise ValueError("Устройство или сцены изменились. Открой план заново.")
             if plan.baseline.scenes:
@@ -283,3 +294,22 @@ class DeviceWorker(QObject):
         if self.timer:
             self.timer.stop()
         self.disconnect()
+
+    @Slot(object)
+    def playlist_action(self, request):
+        self.timer.stop()
+        try:
+            value, baseline = request
+            if self.client is None or self.last is None or self.last.device_id != baseline.device_id:
+                raise ValueError("Подключение изменилось. Открой плейлист заново.")
+            if not self.last.capabilities.supports_playlist:
+                raise ValueError("Для автономного плейлиста нужна firmware 1.3.")
+            if value is not None:
+                self.last = self.client.set_playlist(value, baseline)
+                self.snapshot_ready.emit(self.last)
+            self.playlist_ready.emit(self.client.get_playlist())
+        except Exception as error:
+            log.exception("Playlist operation failed; no automatic retry")
+            self.playlist_failed.emit(user_error(error) + " При обрыве записи проверь настройки после подключения; повтора нет.")
+        finally:
+            self.timer.start()

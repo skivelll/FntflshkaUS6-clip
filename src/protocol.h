@@ -24,6 +24,10 @@ typedef enum {
     CMD_GET_SCENE_DETAILS = 12,
     CMD_RENAME_SCENE = 13,
     CMD_REORDER_SCENES = 14,
+    CMD_GET_PLAYLIST = 15,
+    CMD_SET_PLAYLIST = 16,
+    CMD_GET_TRANSITION = 17,
+    CMD_SET_PLAYLIST_EFFECT = 18,
     CMD_ACK = 0x80,
     CMD_NACK = 0x81,
 } ProtocolCommand;

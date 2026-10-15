@@ -10,6 +10,8 @@
 
 bool storage_init(void);
 bool storage_ready(void);
+bool storage_upload_busy(void);
+bool storage_runtime_activate(uint32_t id);
 bool storage_info(size_t *total, size_t *free_bytes);
 const Manifest *storage_manifest(void);
 ProtocolError storage_upload_begin(uint32_t id, uint32_t file_size, uint32_t file_crc);

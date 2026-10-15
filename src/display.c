@@ -135,6 +135,122 @@ bool display_draw_rgb565_stream(FILE *file, uint16_t width, uint16_t height)
     return true;
 }
 
+// Compose only a newly revealed rectangle into the same 5120-byte DMA strip.
+// The old scene remains in LCD RAM; no second scene/full-screen buffer is needed.
+static bool reveal_rect(FILE *file, long payload, int width, int height,
+                        int left, int top, int rect_width, int rect_height)
+{
+    if (rect_width <= 0 || rect_height <= 0) return true;
+    const int image_x = (DISPLAY_WIDTH - width) / 2;
+    const int image_y = (DISPLAY_HEIGHT - height) / 2;
+    if (rect_width < DISPLAY_WIDTH) {
+        // Tall narrow DMA tiles avoid hundreds of tiny SPI rectangles. Read
+        // complete source rows sequentially; a bounded 640-byte stack scratch
+        // is enough, while the DMA buffer stays exactly 5120 bytes.
+        uint16_t source_row[DISPLAY_WIDTH];
+        const int tile_rows = DISPLAY_WIDTH * LCD_STRIP_HEIGHT / rect_width;
+        const int x1 = left > image_x ? left : image_x;
+        const int x2 = left + rect_width < image_x + width ? left + rect_width : image_x + width;
+        for (int y = top; y < top + rect_height; y += tile_rows) {
+            const int rows = top + rect_height - y < tile_rows ? top + rect_height - y : tile_rows;
+            memset(strip, 0, (size_t)rect_width * rows * sizeof(*strip));
+            const int first_y = y > image_y ? y : image_y;
+            const int last_y = y + rows < image_y + height ? y + rows : image_y + height;
+            if (first_y < last_y && x1 < x2) {
+                if (fseek(file, payload + (long)(first_y - image_y) * width * 2, SEEK_SET) != 0) return false;
+                for (int row_y = first_y; row_y < last_y; ++row_y) {
+                    if (fread(source_row, sizeof(*source_row), (size_t)width, file) != (size_t)width) return false;
+                    memcpy(strip + (row_y - y) * rect_width + x1 - left,
+                           source_row + x1 - image_x, (size_t)(x2 - x1) * sizeof(*strip));
+                }
+            }
+            draw_strip(left, y, rect_width, rows);
+        }
+        return true;
+    }
+    for (int y = top; y < top + rect_height; y += LCD_STRIP_HEIGHT) {
+        const int rows = top + rect_height - y < LCD_STRIP_HEIGHT
+                         ? top + rect_height - y : LCD_STRIP_HEIGHT;
+        const int first_y = y > image_y ? y : image_y;
+        const int last_y = y + rows < image_y + height ? y + rows : image_y + height;
+        if (first_y < last_y) {
+            const size_t count = (size_t)(last_y - first_y) * width;
+            if (fseek(file, payload + (long)(first_y - image_y) * width * 2, SEEK_SET) != 0 ||
+                fread(strip, sizeof(*strip), count, file) != count) return false;
+        }
+        // Expand packed image rows backwards, adding centered black margins.
+        // Then compact the requested rectangle forwards. Both moves are in-place
+        // and never overwrite source rows that have not been consumed yet.
+        for (int row = rows - 1; row >= 0; --row) {
+            uint16_t *destination = strip + row * DISPLAY_WIDTH;
+            if (y + row >= first_y && y + row < last_y) {
+                memmove(destination + image_x, strip + (y + row - first_y) * width,
+                        (size_t)width * sizeof(*strip));
+                memset(destination, 0, (size_t)image_x * sizeof(*strip));
+                memset(destination + image_x + width, 0,
+                       (size_t)(DISPLAY_WIDTH - image_x - width) * sizeof(*strip));
+            } else {
+                memset(destination, 0, DISPLAY_WIDTH * sizeof(*strip));
+            }
+        }
+        for (int row = 0; row < rows; ++row)
+            memmove(strip + row * rect_width, strip + row * DISPLAY_WIDTH + left,
+                    (size_t)rect_width * sizeof(*strip));
+        draw_strip(left, y, rect_width, rows);
+    }
+    return true;
+}
+
+bool display_draw_transition(FILE *file, uint16_t width, uint16_t height, uint8_t effect)
+{
+    if (!file || !width || !height || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT || effect > 5)
+        return false;
+    const long payload = ftell(file);
+    if (payload < 0) return false;
+    if (effect == 0) {
+        // Hide the serial strip transfer for an ordinary cut. A short dark gap is
+        // intentional: this panel has no double buffer for an instantaneous swap.
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0));
+        vTaskDelay(pdMS_TO_TICKS(10));
+        const bool ok = reveal_rect(file, payload, width, height, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 4096));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0));
+        return ok;
+    }
+    const int steps = 16;
+    const TickType_t start = xTaskGetTickCount();
+    int previous = 0;
+    int old_x = DISPLAY_WIDTH / 2, old_y = DISPLAY_HEIGHT / 2;
+    int old_width = 0, old_height = 0;
+    for (int step = 1; step <= steps; ++step) {
+        bool ok;
+        if (effect == 5) {
+            const int x = DISPLAY_WIDTH * (steps - step) / (steps * 2);
+            const int y = DISPLAY_HEIGHT * (steps - step) / (steps * 2);
+            const int w = DISPLAY_WIDTH - x * 2, h = DISPLAY_HEIGHT - y * 2;
+            ok = reveal_rect(file, payload, width, height, x, y, w, old_y - y) &&
+                 reveal_rect(file, payload, width, height, x, old_y + old_height, w, y + h - old_y - old_height) &&
+                 reveal_rect(file, payload, width, height, x, old_y, old_x - x, old_height) &&
+                 reveal_rect(file, payload, width, height, old_x + old_width, old_y, x + w - old_x - old_width, old_height);
+            old_x = x; old_y = y; old_width = w; old_height = h;
+        } else {
+            const bool horizontal = effect <= 2;
+            const int size = horizontal ? DISPLAY_WIDTH : DISPLAY_HEIGHT;
+            const int edge = size * step / steps;
+            const int position = (effect == 1 || effect == 3) ? previous : size - edge;
+            ok = horizontal ? reveal_rect(file, payload, width, height, position, 0, edge - previous, DISPLAY_HEIGHT)
+                            : reveal_rect(file, payload, width, height, 0, position, DISPLAY_WIDTH, edge - previous);
+            previous = edge;
+        }
+        if (!ok) return false;
+        const TickType_t target = pdMS_TO_TICKS(400U * (unsigned)step / (unsigned)steps);
+        const TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed < target) vTaskDelay(target - elapsed);
+    }
+    return true;
+}
+
 typedef struct {
     char ch;
     uint8_t rows[7];

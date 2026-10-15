@@ -123,6 +123,7 @@ bool storage_init(void)
 }
 
 bool storage_ready(void) { return mounted; }
+bool storage_upload_busy(void) { return upload.file != NULL; }
 
 bool storage_info(size_t *total, size_t *free_bytes)
 {
@@ -318,4 +319,15 @@ FILE *storage_open_active(ManifestScene *scene)
     FILE *file = open_verified_scene(selected);
     if (file && scene) *scene = *selected;
     return file;
+}
+
+bool storage_runtime_activate(uint32_t id)
+{
+    const ManifestScene *scene = manifest_find(&manifest, id);
+    if (!mounted || upload.file || !scene) return false;
+    FILE *file = open_verified_scene(scene);
+    if (!file) return false;
+    fclose(file);
+    manifest.active = id; // Runtime only: timer ticks must not wear Flash.
+    return true;
 }
