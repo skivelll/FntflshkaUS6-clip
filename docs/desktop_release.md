@@ -101,6 +101,10 @@ stale lock. Demo и real используют разные lock/settings. Это
 
 ## Validation
 
+Ниже результаты базовой portable-фазы. Последующие сборки обновляют exe/ZIP;
+их актуальные версии и SHA256 находятся в соседнем `build-info.json`.
+Проверки интерактивного редактора описаны в [image_editor.md](image_editor.md).
+
 Проверено 2026-10-15 на Windows 11 10.0.26200 x64, Python 3.12.10:
 
 - 49 desktop tests + 8 tools tests: PASS (включая второй процесс до USB-доступа,

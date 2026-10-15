@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import warnings
 from PIL import Image, ImageOps
-from ..core.asset import encode_asset
+from ..core.asset import encode_asset, parse_asset
 from .rgb565 import decode_rgb565
 
 
@@ -22,6 +22,23 @@ class Placement:
 class PreparedImage:
     asset: bytes
     preview: Image.Image
+
+
+@dataclass(frozen=True)
+class SceneSource:
+    """Immutable verified device pixels; no temporary PNG or Qt objects."""
+    asset: bytes
+    target: tuple[int, int]
+
+
+def scene_canvas(source: SceneSource):
+    info = parse_asset(source.asset)
+    pixels = decode_rgb565(source.asset[24:], (info["width"], info["height"]))
+    if not 1 <= source.target[0] <= 320 or not 1 <= source.target[1] <= 172 or pixels.width > source.target[0] or pixels.height > source.target[1]:
+        raise ValueError("Сохранённая сцена не подходит для этого экрана.")
+    canvas = Image.new("RGBA", source.target, "black")
+    canvas.paste(pixels, ((canvas.width - pixels.width) // 2, (canvas.height - pixels.height) // 2))
+    return canvas
 
 
 def load_image(path: Path):

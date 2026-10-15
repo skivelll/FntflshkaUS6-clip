@@ -26,7 +26,7 @@ class Preferences:
 
     def save(self, window):
         self.store.setValue("window/geometry", window.saveGeometry())
-        self.store.setValue("image/placement", json.dumps(window.controls.preferences()))
+        self.store.setValue("image/placement", json.dumps(window.editor_preferences or window.controls.preferences()))
         self.store.setValue("image/folder", window.image_folder)
         self.store.sync()
         if self.store.status() != QSettings.NoError:

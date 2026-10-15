@@ -5,7 +5,8 @@ from pathlib import Path
 import tempfile
 import time
 from PIL import Image
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, QPoint, QPointF, QEvent, Qt
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 from .core.transport import ClipDevice
 from .device.client import DeviceClient
@@ -102,6 +103,45 @@ class SmokeCheck(QObject):
                 assert scene.id == 1 and scene.title == 'Тест "exe"'
                 assert scene.checksum != self.replaced_checksum and scene.active
                 self.results.append("replacement_preserves_title_order")
+                w.scenes.setCurrentRow(1)
+                w.edit_selected()
+                self.step = 11
+            elif self.step == 11 and w.prepared:
+                rect = w.preview.display_rect()
+                start = rect.center()
+                end = start + QPointF(20 * rect.width() / 320, 8 * rect.height() / 172)
+                for kind, point, button, buttons in (
+                    (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+                    (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+                    (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+                ):
+                    event = QMouseEvent(kind, point, QPointF(w.preview.mapToGlobal(point.toPoint())), button, buttons, Qt.NoModifier)
+                    QApplication.sendEvent(w.preview, event)
+                assert (w.controls.x.value(), w.controls.y.value()) == (20, 8)
+                w.controls.scale_spin.setValue(137)
+                assert w.controls.scale.value() == 137
+                event = QWheelEvent(start, QPointF(w.preview.mapToGlobal(start.toPoint())), QPoint(), QPoint(0, 120),
+                                    Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+                QApplication.sendEvent(w.preview, event)
+                assert w.controls.scale.value() == w.controls.scale_spin.value() == 151
+                self.results.append("editor_drag_numeric_wheel")
+                self.edit_checksum = w.snapshot.scenes[1].checksum
+                w.controls.scale_spin.setValue(80)  # Expose margins, so the rendered pixels must change.
+                self.step = 12
+            elif self.step == 12 and w.prepared:
+                assert w.storage_bar.projection.upload == len(w.prepared.asset)
+                self.report.parent.mkdir(parents=True, exist_ok=True)
+                w.grab().save(str(self.report.with_name(self.report.stem + "-editor.png")))
+                w.busy = True
+                w.update_scene_actions()
+                w.request_replace.emit((w.prepared.asset, *w.replace_target, w.replace_device_id))
+                self.step = 13
+            elif self.step == 13 and not w.busy:
+                assert w.source_asset is None and len(w.snapshot.scenes) == 2
+                assert w.snapshot.scenes[1].id == 1 and w.snapshot.scenes[1].title == 'Тест "exe"'
+                assert w.snapshot.scenes[1].checksum != self.edit_checksum
+                assert w.storage_bar.projection.reclaim == 110104
+                self.results.append("cached_scene_edit_same_id_storage_bar")
                 self.reads_before_reconnect = self.reads
                 w.reconnect_device()
                 self.step = 9

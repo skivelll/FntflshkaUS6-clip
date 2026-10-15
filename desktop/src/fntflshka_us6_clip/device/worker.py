@@ -124,8 +124,9 @@ class DeviceWorker(QObject):
 
     @Slot(object)
     def replace_image(self, request):
-        data, scene_id, checksum, port = request
-        if self.client is None or self.client.transport.port != port:
+        data, scene_id, checksum, port = request[:4]
+        identity_changed = len(request) > 4 and (self.last is None or self.last.device_id != request[4])
+        if self.client is None or self.client.transport.port != port or identity_changed:
             self.error.emit("Подключение изменилось. Выбери сцену заново.")
             self.upload_failed.emit()
             return

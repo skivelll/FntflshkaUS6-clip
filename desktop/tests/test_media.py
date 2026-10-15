@@ -1,6 +1,7 @@
 import unittest
 from PIL import Image
-from fntflshka_us6_clip.core.asset import rgb888_to_rgb565, parse_asset
+from fntflshka_us6_clip.core.asset import rgb888_to_rgb565, parse_asset, rgb565_payload
+import struct
 from fntflshka_us6_clip.media.rgb565 import decode_rgb565, asset_size
 from fntflshka_us6_clip.media.image import Placement, prepare_image
 from fntflshka_us6_clip.device.models import mock_capabilities
@@ -17,6 +18,23 @@ class MediaTests(unittest.TestCase):
     def test_rgb565_roundtrip_matches_wire_pixels(self):
         preview = decode_rgb565(b"\x00\xf8\xe0\x07\x1f\x00\xff\xff", (4, 1))
         self.assertEqual(list(preview.get_flattened_data()), [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)])
+
+    def test_native_codec_matches_all_65536_rgb565_colors(self):
+        payload = b"".join(struct.pack("<H", value) for value in range(65536))
+        decoded = decode_rgb565(payload, (256, 256))
+        expected = bytearray()
+        for value in range(65536):
+            r, g, b = value >> 11, (value >> 5) & 63, value & 31
+            expected.extend(((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)))
+        self.assertEqual(decoded.tobytes(), bytes(expected))
+        self.assertEqual(rgb565_payload(decoded), payload)
+
+    def test_native_encoder_matches_scalar_at_all_channel_boundaries(self):
+        pixels = [(x, y, (x + y) & 255) for y in range(256) for x in range(256)]
+        source = Image.new("RGB", (256, 256))
+        source.putdata(pixels)
+        expected = b"".join(struct.pack("<H", rgb888_to_rgb565(*pixel)) for pixel in pixels)
+        self.assertEqual(rgb565_payload(source), expected)
 
     def test_fit_keeps_entire_image_and_background(self):
         prepared = prepare_image(Image.new("RGBA", (2, 2), "red"), Placement(width=8, height=4, pixel_art=True))

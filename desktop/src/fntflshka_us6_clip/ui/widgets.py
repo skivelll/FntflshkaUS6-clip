@@ -1,6 +1,6 @@
 from PySide6.QtCore import Signal, QSignalBlocker
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QSlider, QSpinBox, QCheckBox, QPushButton, QColorDialog
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSlider, QSpinBox, QCheckBox, QPushButton, QColorDialog
 from PySide6.QtCore import Qt
 from ..media.image import Placement
 
@@ -23,11 +23,22 @@ class PlacementControls(QWidget):
         self.mode.currentIndexChanged.connect(self.changed)
         layout.addWidget(self.mode)
         self.scale_label = QLabel("Масштаб · 100%")
-        layout.addWidget(self.scale_label)
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(self.scale_label)
+        self.scale_spin = QSpinBox()
+        self.scale_spin.setRange(10, 400)
+        self.scale_spin.setValue(100)
+        self.scale_spin.setSuffix(" %")
+        self.scale_spin.setKeyboardTracking(False)
+        self.scale_spin.setAccessibleName("Точный масштаб изображения")
+        scale_row.addWidget(self.scale_spin)
+        layout.addLayout(scale_row)
         self.scale = QSlider(Qt.Horizontal)
         self.scale.setRange(10, 400)
         self.scale.setValue(100)
         self.scale.valueChanged.connect(lambda value: self.scale_label.setText(f"Масштаб · {value}%"))
+        self.scale.valueChanged.connect(self.scale_spin.setValue)
+        self.scale_spin.valueChanged.connect(self.scale.setValue)
         self.scale.valueChanged.connect(self.changed)
         layout.addWidget(self.scale)
         self.x = QSpinBox()
@@ -48,7 +59,7 @@ class PlacementControls(QWidget):
         reset = QPushButton("Вернуть по центру")
         reset.clicked.connect(self.reset_placement)
         layout.addWidget(reset)
-        help_text = QLabel("В preview — итоговые цвета\nRGB565, как в файле для LCD.")
+        help_text = QLabel("Тяни картинку в preview мышью.\nКолесо — масштаб у курсора.\nЦвета — итоговый RGB565.")
         help_text.setObjectName("muted")
         layout.addStretch()
         layout.addWidget(help_text)
@@ -91,4 +102,29 @@ class PlacementControls(QWidget):
             self.background = QColor(background).name()
         self.background_button.setText("■ " + self.background)
         self.scale_label.setText(f"Масштаб · {self.scale.value()}%")
+        self.scale_spin.setValue(self.scale.value())
         del blockers
+
+    def set_offset(self, x, y):
+        blockers = [QSignalBlocker(self.x), QSignalBlocker(self.y)]
+        self.x.setValue(round(x))
+        self.y.setValue(round(y))
+        del blockers
+        self.changed.emit()
+
+    def zoom_at(self, steps, anchor):
+        old_scale = self.scale.value()
+        new_scale = max(10, min(400, round(old_scale * 1.1 ** max(-20, min(20, steps)))))
+        if new_scale == old_scale:
+            return
+        ratio = new_scale / old_scale
+        x = anchor[0] - ratio * (anchor[0] - self.x.value())
+        y = anchor[1] - ratio * (anchor[1] - self.y.value())
+        blockers = [QSignalBlocker(widget) for widget in (self.scale, self.scale_spin, self.x, self.y)]
+        self.scale.setValue(new_scale)
+        self.scale_spin.setValue(new_scale)
+        self.scale_label.setText(f"Масштаб · {new_scale}%")
+        self.x.setValue(round(x))
+        self.y.setValue(round(y))
+        del blockers
+        self.changed.emit()

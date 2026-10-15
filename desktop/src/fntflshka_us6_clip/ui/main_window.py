@@ -9,9 +9,11 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, Q
                              QToolButton, QPlainTextEdit, QScrollArea, QFrame, QInputDialog)
 from .preview import Preview
 from .widgets import PlacementControls
-from ..scenes.models import estimate_storage, next_scene_id
+from .storage_bar import StorageBar
+from ..scenes.models import estimate_storage, next_scene_id, storage_projection
 from ..core.asset import parse_asset
 from ..media.rgb565 import decode_rgb565
+from ..media.image import SceneSource
 
 log = logging.getLogger(__name__)
 
@@ -36,11 +38,18 @@ class MainWindow(QMainWindow):
         self.connection_message = None
         self.operation_error = None
         self.source_path = None
+        self.source_asset = None
+        self.editor_preferences = None
+        self.edit_scene_label = ""
+        self.replace_device_id = None
+        self.drag_offset = (0, 0)
         self.prepared = None
         self.busy = False
         self.closing = False
         self.generation = 0
         self.render_inflight = False
+        self.source_revision = 0
+        self.render_source_revision = None
         self.operation_context = None
         self.preview_key = None
         self.preview_cancel = Event()
@@ -89,6 +98,10 @@ class MainWindow(QMainWindow):
         self.delete_button.clicked.connect(self.delete_selected)
         self.scenes.currentItemChanged.connect(self.update_scene_actions)
         sidebar.addWidget(self.activate_button)
+        self.edit_button = QPushButton("Редактировать сцену…")
+        self.edit_button.setToolTip("Сдвиг и масштаб сохранённого RGB565 из RAM. Исходный PNG и обрезанные части на плате не хранятся.")
+        self.edit_button.clicked.connect(self.edit_selected)
+        sidebar.addWidget(self.edit_button)
         self.rename_button = QPushButton("Имя…")
         self.rename_button.setToolTip("Переименовать сцену на заколке")
         self.replace_button = QPushButton("Заменить картинку…")
@@ -112,6 +125,9 @@ class MainWindow(QMainWindow):
         sidebar.addWidget(self.add_button)
         body.addLayout(sidebar)
         self.preview = Preview()
+        self.preview.drag_started.connect(self.begin_drag)
+        self.preview.dragged.connect(self.drag_image)
+        self.preview.zoom_requested.connect(self.zoom_image)
         body.addWidget(self.preview, 1)
         self.controls = PlacementControls()
         controls_scroll = QScrollArea()
@@ -125,13 +141,21 @@ class MainWindow(QMainWindow):
         self.image_label = QLabel("Перетащи PNG, JPG или WEBP в окно")
         self.image_label.setObjectName("muted")
         self.image_label.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.image_label)
+        image_row = QHBoxLayout()
+        image_row.addWidget(self.image_label, 1)
+        self.cancel_edit_button = QPushButton("Отменить изменения")
+        self.cancel_edit_button.clicked.connect(self.cancel_edit)
+        self.cancel_edit_button.hide()
+        image_row.addWidget(self.cancel_edit_button)
+        layout.addLayout(image_row)
         self.message = QLabel("Заколка не найдена. Подключи её по USB-C." if not mock else "Демо-режим: USB не используется.")
         self.message.setWordWrap(True)
         self.message.setTextFormat(Qt.PlainText)
         layout.addWidget(self.message)
         self.memory = QLabel("Добавь картинку, чтобы подготовить сцену.")
         self.memory.setWordWrap(True)
+        self.storage_bar = StorageBar()
+        layout.addWidget(self.storage_bar)
         layout.addWidget(self.memory)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -158,7 +182,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.details)
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
-        self.debounce.setInterval(60)
+        self.debounce.setInterval(33)
         self.debounce.timeout.connect(self.dispatch_render)
         self.controls.changed.connect(self.schedule_render)
         self.snapshot = None
@@ -233,7 +257,7 @@ class MainWindow(QMainWindow):
             self.preview.target = (caps.display_width, caps.display_height)
             target_changed = self.controls.target != self.preview.target
             self.controls.target = self.preview.target
-            if target_changed and self.source_path:
+            if target_changed and self.image_source is not None:
                 self.schedule_render()
             for scene in snapshot.scenes:
                 item = QListWidgetItem(f"{'● ' if scene.active else ''}{scene.label}\nID {scene.id} · {scene.width}×{scene.height}")
@@ -245,8 +269,8 @@ class MainWindow(QMainWindow):
                     self.set_scene_thumbnail(item, self.scene_previews[key])
                 if scene.id == selected:
                     self.scenes.setCurrentItem(item)
-            if self.source_path:
-                self.scenes.addItem("✦ " + self.source_path.name + " · новая")
+            if self.image_source is not None:
+                self.scenes.addItem("✎ " + self.source_name + (" · изменения" if self.replace_target else " · новая"))
             self.details.setPlainText(
                 f"Port: {snapshot.port}\nFirmware: {'.'.join(map(str, snapshot.firmware_version))}\n"
                 f"Protocol: {caps.protocol_version} / Asset: {caps.asset_version}\n"
@@ -271,6 +295,19 @@ class MainWindow(QMainWindow):
         item = self.scenes.currentItem()
         return item.data(Qt.UserRole) if item else None
 
+    @property
+    def image_source(self):
+        return self.source_asset if self.source_asset is not None else self.source_path
+
+    @property
+    def source_name(self):
+        return self.edit_scene_label if self.source_asset is not None else self.source_path.name if self.source_path else "Новая картинка"
+
+    def replacement_is_current(self):
+        return bool(self.replace_target and self.snapshot and self.replace_target[2] == self.snapshot.port
+                    and self.replace_device_id == self.snapshot.device_id
+                    and any(s.id == self.replace_target[0] and s.checksum == self.replace_target[1] for s in self.snapshot.scenes))
+
     def selected_scene(self):
         scene_id = self.selected_scene_id()
         return next((s for s in self.snapshot.scenes if s.id == scene_id), None) if self.snapshot else None
@@ -284,6 +321,10 @@ class MainWindow(QMainWindow):
         metadata = bool(available and self.snapshot.capabilities.supports_scene_metadata)
         self.rename_button.setEnabled(metadata)
         self.replace_button.setEnabled(available)
+        key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height) if scene else None
+        self.edit_button.setEnabled(available and key in self.scene_previews)
+        self.cancel_edit_button.setVisible(self.replace_target is not None)
+        self.cancel_edit_button.setEnabled(not self.busy and not self.closing)
         index = next((i for i, s in enumerate(self.snapshot.scenes) if scene and s.id == scene.id), -1) if self.snapshot else -1
         self.up_button.setEnabled(metadata and index > 0)
         self.down_button.setEnabled(metadata and index < len(self.snapshot.scenes) - 1 if self.snapshot else False)
@@ -307,7 +348,7 @@ class MainWindow(QMainWindow):
         if key is None:
             if self.prepared:
                 self.preview.set_image(self.prepared.preview)
-                self.image_label.setText(self.source_path.name if self.source_path else "Новая картинка")
+                self.image_label.setText(self.source_name)
             else:
                 self.preview.clear_image()
             return
@@ -412,6 +453,71 @@ class MainWindow(QMainWindow):
         if path:
             self.import_image(Path(path), replacement=target)
 
+    def edit_selected(self):
+        scene = self.selected_scene()
+        if not scene or self.busy or self.cache_loading or self.closing:
+            return
+        key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height)
+        data = self.scene_previews.get(key)
+        if data is None:
+            self.message.setText("Дождись загрузки этой сцены в память приложения.")
+            return
+        self.restore_editor_controls()
+        self.editor_preferences = self.controls.preferences()
+        self.controls.restore_preferences({"mode": "fit", "scale": 100, "x": 0, "y": 0,
+                                           "pixel_art": True, "background": "#000000"})
+        self.source_path = None
+        self.source_asset = SceneSource(data, self.controls.target)
+        self.source_revision += 1
+        self.edit_scene_label = scene.label
+        self.replace_target = (scene.id, scene.checksum, self.snapshot.port)
+        self.replace_device_id = self.snapshot.device_id
+        self.operation_error = None
+        self.scenes.setCurrentRow(-1)
+        self.on_snapshot(self.snapshot)
+        self.schedule_render()
+        self.image_label.setText(self.source_name + " · редактирование сохранённой картинки")
+        self.message.setText("Редактируем RGB565 с платы. Обрезанные части исходного PNG восстановить нельзя. До сохранения LCD не меняется.")
+
+    def restore_editor_controls(self):
+        if self.editor_preferences is not None:
+            self.controls.restore_preferences(self.editor_preferences)
+            self.editor_preferences = None
+
+    def cancel_edit(self):
+        if self.busy or self.closing:
+            return
+        scene_id = self.replace_target[0] if self.replace_target else None
+        self.generation += 1
+        self.source_revision += 1
+        self.debounce.stop()
+        self.prepared = None
+        self.source_asset = None
+        self.source_path = None
+        self.replace_target = None
+        self.replace_device_id = None
+        self.restore_editor_controls()
+        self.preview_key = None
+        self.preview.clear_image()
+        self.on_snapshot(self.snapshot)
+        if self.snapshot:
+            for row in range(self.scenes.count()):
+                if self.scenes.item(row).data(Qt.UserRole) == scene_id:
+                    self.scenes.setCurrentRow(row)
+                    break
+        self.message.setText("Изменения отменены. Сцена на заколке не менялась.")
+
+    def begin_drag(self):
+        self.drag_offset = (self.controls.x.value(), self.controls.y.value())
+
+    def drag_image(self, dx, dy):
+        if self.preview.interactive:
+            self.controls.set_offset(self.drag_offset[0] + dx, self.drag_offset[1] + dy)
+
+    def zoom_image(self, steps, anchor):
+        if self.preview.interactive:
+            self.controls.zoom_at(steps, anchor)
+
     @Slot(object, str)
     def on_preview_failed(self, key, message):
         if key == self.preview_key:
@@ -434,6 +540,8 @@ class MainWindow(QMainWindow):
             return
         expected_port = self.snapshot.port
         text = f"Удалить сцену {scene.id} с заколки? Это действие нельзя отменить."
+        projection = storage_projection(self.snapshot.capabilities, scene=scene)
+        text += f"\nФайл сцены: {projection.reclaim:,} Б. Прогноз свободного места: ≈{projection.projected_free:,} Б.\nТочный результат зависит от A/B-файлов и блоков LittleFS и будет показан после удаления."
         if scene.active:
             text += "\n\nЭта сцена сейчас на экране. После удаления включится встроенная демонстрация."
         reply = QMessageBox.question(self, "Удаление сцены", text,
@@ -472,7 +580,8 @@ class MainWindow(QMainWindow):
             self.message.setText("Название сохранено на заколке." if action == "rename" else "Порядок сцен сохранён на заколке.")
             return
         self.message.setText(f"Сцена {scene_id} включена на заколке." if action == "activate" else
-                             f"Сцена {scene_id} удалена. Свободно {after.capabilities.storage_free:,} байт." +
+                             f"Сцена {scene_id} удалена. Свободно {after.capabilities.storage_free:,} байт "
+                             f"(изменение: {after.capabilities.storage_free - before.capabilities.storage_free:+,} Б)." +
                              (" Включена встроенная демонстрация." if not any(s.active for s in after.scenes) else ""))
 
     @Slot()
@@ -491,9 +600,13 @@ class MainWindow(QMainWindow):
     def import_image(self, path, replacement=None):
         if self.busy or self.cache_loading:
             return
+        self.restore_editor_controls()
+        self.source_asset = None
         self.replace_target = replacement
+        self.replace_device_id = self.snapshot.device_id if replacement and self.snapshot else None
         self.operation_error = None
         self.source_path = Path(path)
+        self.source_revision += 1
         self.image_folder = str(self.source_path.resolve().parent)
         self.scenes.clearSelection()
         self.scenes.setCurrentRow(-1)
@@ -506,24 +619,34 @@ class MainWindow(QMainWindow):
         self.generation += 1
         self.prepared = None
         self.update_memory()
-        if self.source_path:
+        if self.image_source is not None and not self.debounce.isActive():
             self.debounce.start()
 
     def dispatch_render(self):
-        if self.source_path and not self.render_inflight and self.image_thread:
+        if self.image_source is not None and not self.render_inflight and self.image_thread:
+            self.debounce.stop()
             self.render_inflight = True
-            self.request_render.emit(self.generation, self.source_path, self.controls.placement())
+            self.render_source_revision = self.source_revision
+            self.request_render.emit(self.generation, self.image_source, self.controls.placement())
 
     @Slot(int, object)
     def on_rendered(self, generation, prepared):
         self.render_inflight = False
         if generation != self.generation:
+            # Continuous gestures produce newer placements before the previous
+            # RGB565 frame finishes. Display those intermediate frames only for
+            # this source; they must never become uploadable prepared assets.
+            if (self.render_source_revision == self.source_revision and self.image_source is not None
+                    and self.selected_scene() is None and not self.closing and not self.busy
+                    and prepared.preview.size == self.controls.target):
+                self.preview.set_image(prepared.preview)
             self.dispatch_render()
             return
         self.prepared = prepared
         if self.selected_scene() is None:
             self.preview.set_image(prepared.preview)
-        self.message.setText("Картинка готова. Можно заливать :3")
+        self.message.setText("Изменения готовы в preview. Нажми «СОХРАНИТЬ СЦЕНУ», чтобы обновить заколку." if self.source_asset is not None
+                             else "Картинка готова. Можно заливать :3")
         self.update_memory()
 
     @Slot(int, str)
@@ -538,37 +661,57 @@ class MainWindow(QMainWindow):
 
     def update_memory(self):
         enabled = False
-        if self.prepared:
+        scene = self.selected_scene()
+        editable = self.image_source is not None and scene is None and not self.busy and not self.closing and not self.cache_loading
+        self.preview.set_interactive(editable)
+        projection = storage_projection(self.snapshot.capabilities) if self.snapshot else None
+        if scene:
+            projection = storage_projection(self.snapshot.capabilities, scene=scene)
+            self.memory.setText(
+                f"Свободно {projection.free:,} / {projection.total:,} Б · серый: занято · бирюзовый: удаляемый файл ≈{projection.reclaim:,} Б\n"
+                f"После удаления: ≈{projection.projected_free:,} Б свободно. A/B и служебные блоки уточнятся после удаления.")
+        elif self.prepared:
             size = len(self.prepared.asset)
             if self.snapshot:
                 estimate = estimate_storage(size, self.snapshot.capabilities)
                 free_id = next_scene_id(self.snapshot.scenes)
+                projection = storage_projection(self.snapshot.capabilities, upload=size)
                 self.memory.setText(
-                    f"Размер сцены: {size:,} байт · Свободно: {estimate.free_bytes:,} байт\n"
-                    f"После вычета файла: {estimate.after_payload_bytes:,} байт · "
+                    f"Свободно {projection.free:,} / {projection.total:,} Б · розовый: запись {size:,} Б · "
                     f"{estimate.reason if free_id or self.replace_target else 'Все 8 мест заняты'}\n"
-                    "LittleFS дополнительно расходует память на служебные данные; остаток уточнится после загрузки.")
-                target_valid = bool(self.replace_target and self.replace_target[2] == self.snapshot.port and
-                    any(s.id == self.replace_target[0] and s.checksum == self.replace_target[1] for s in self.snapshot.scenes))
-                enabled = estimate.fits and (target_valid if self.replace_target else free_id is not None)
+                    f"После записи: ≈{projection.projected_free:,} Б, нужен запас 8 192 Б. "
+                    + ("Старый A/B-файл сохраняется; " if self.replace_target else "")
+                    + "точный остаток — после ACK.")
+                enabled = estimate.fits and (self.replacement_is_current() if self.replace_target else free_id is not None)
+                if self.replace_target and not self.replacement_is_current():
+                    self.memory.setText(self.memory.text() + "\nСцена или устройство изменились: отменить изменения и выбрать сцену заново.")
             else:
                 self.memory.setText(f"Размер сцены: {size:,} байт · Подключи заколку для проверки памяти.")
         else:
-            text = "Готовлю сцену..." if self.source_path else "Добавь картинку или выбери сцену из списка."
+            text = "Готовлю сцену..." if self.image_source is not None else "Добавь картинку или выбери сцену из списка."
             if self.snapshot:
                 text += (f"\nСцен: {len(self.snapshot.scenes)}/8 · "
-                         f"Свободно: {self.snapshot.capabilities.storage_free:,} байт")
+                         f"Свободно: {projection.free:,} / {projection.total:,} Б · серый: занято")
             self.memory.setText(text)
-        self.upload_button.setText(f"ЗАМЕНИТЬ СЦЕНУ {self.replace_target[0]}" if self.replace_target else "ЗАЛИТЬ В ЗАКОЛКУ")
+        self.storage_bar.set_projection(projection)
+        self.upload_button.setText(f"{'СОХРАНИТЬ' if self.source_asset is not None else 'ЗАМЕНИТЬ'} СЦЕНУ {self.replace_target[0]}" if self.replace_target else "ЗАЛИТЬ В ЗАКОЛКУ")
         self.upload_button.setEnabled(enabled and not self.busy and not self.closing and not self.cache_loading and self.selected_scene() is None)
 
     def begin_upload(self):
-        if not self.prepared or not self.snapshot or self.busy or self.cache_loading:
+        if not self.prepared or not self.snapshot or self.busy or self.cache_loading or self.closing or self.selected_scene() is not None:
             return
         if self.replace_target:
-            reply = QMessageBox.question(self, "Замена картинки", f"Заменить изображение сцены {self.replace_target[0]}? Имя и порядок сохранятся.",
+            expected = (self.replace_target, self.replace_device_id, self.prepared.asset)
+            if not self.replacement_is_current():
+                self.message.setText("Сцена или устройство изменились. Отмени изменения и выбери сцену заново.")
+                return
+            reply = QMessageBox.question(self, "Сохранение сцены" if self.source_asset is not None else "Замена картинки",
+                                         f"Сохранить изменения сцены {self.replace_target[0]}? Её изображение обновится на заколке. Имя и порядок сохранятся.",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
+                return
+            if not self.prepared or expected != (self.replace_target, self.replace_device_id, self.prepared.asset) or not self.replacement_is_current():
+                self.message.setText("Сцена или подключение изменились во время подтверждения. Выбери сцену заново.")
                 return
         self.operation_error = None
         self.busy = True
@@ -580,7 +723,7 @@ class MainWindow(QMainWindow):
         self.message.setText("Загружаю сцену...")
         self.update_memory()
         if self.replace_target:
-            self.request_replace.emit((self.prepared.asset, *self.replace_target))
+            self.request_replace.emit((self.prepared.asset, *self.replace_target, self.replace_device_id))
         else:
             self.request_upload.emit(self.prepared.asset)
 
@@ -591,7 +734,15 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def on_uploaded(self, result):
+        edited = self.source_asset is not None
+        if edited:
+            self.generation += 1
+            self.source_revision += 1
+            self.source_asset = None
+            self.prepared = None
+            self.restore_editor_controls()
         self.replace_target = None
+        self.replace_device_id = None
         self.busy = False
         self.scenes.setEnabled(True)
         self.update_scene_actions()
@@ -599,6 +750,13 @@ class MainWindow(QMainWindow):
         self.add_button.setEnabled(True)
         self.progress.setValue(100)
         self.message.setText(f"Готово :3 Сцена {result[0]} сохранена и включена на заколке.")
+        if edited:
+            self.on_snapshot(result[2])
+            for row in range(self.scenes.count()):
+                if self.scenes.item(row).data(Qt.UserRole) == result[0]:
+                    self.scenes.setCurrentRow(row)
+                    break
+        self.update_scene_actions()
         self.update_memory()
 
     @Slot()

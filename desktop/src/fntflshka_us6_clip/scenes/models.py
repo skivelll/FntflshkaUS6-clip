@@ -61,3 +61,23 @@ def estimate_storage(size, caps):
         reason = "✓ помещается"
     return StorageEstimate(size, caps.storage_free, max(0, caps.storage_free - size),
                            size <= caps.max_asset_size and size + 8192 <= caps.storage_free, reason)
+
+
+@dataclass(frozen=True)
+class StorageProjection:
+    total: int
+    free: int
+    used: int
+    upload: int
+    reclaim: int
+
+    @property
+    def projected_free(self):
+        return max(0, min(self.total, self.free - self.upload + self.reclaim))
+
+
+def storage_projection(caps, upload=0, scene=None):
+    """Logical-file forecast; A/B old files and LittleFS blocks are unknown to v1."""
+    used = max(0, caps.storage_total - caps.storage_free)
+    reclaim = min(used, 24 + scene.width * scene.height * 2) if scene is not None else 0
+    return StorageProjection(caps.storage_total, caps.storage_free, used, max(0, upload), reclaim)
