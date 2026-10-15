@@ -219,6 +219,47 @@ class SmokeCheck(QObject):
                 self.results.append("playlist_ack_readback_order_no_asset_reads")
                 dialog.grab().save(str(self.report.with_name(self.report.stem + "-playlist.png")))
                 dialog.close()
+                path = Path(self.temp.name) / "анимация.gif"
+                Image.new("RGB", (32, 32), "red").save(path, save_all=True,
+                    append_images=[Image.new("RGB", (32, 32), "blue")], duration=100, loop=0)
+                w.import_image(path, gif_options=("compact", 0, 2, 1))
+                self.step = 21
+            elif self.step == 21 and w.prepared:
+                from .core.asset import parse_asset
+                info = parse_asset(w.prepared.asset)
+                assert info["type"] == 2 and info["width"] == 128 and len(w.preview.animation) == 2
+                w.gif_options = ("full", 0, 2, 1)
+                w.source_revision += 1
+                w.schedule_render()
+                self.step = 22
+            elif self.step == 22 and w.prepared:
+                from .core.asset import parse_asset
+                assert parse_asset(w.prepared.asset)["width"] == 320
+                w.begin_upload()
+                self.step = 23
+            elif self.step == 23 and not w.busy and len(w.snapshot.scenes) == 3:
+                assert w.snapshot.scenes[-1].type == 2
+                w.scenes.setCurrentRow(2)
+                self.step = 24
+            elif self.step == 24 and len(w.preview.animation) == 2:
+                assert self.reads == 0
+                self.results.append("gif_both_profiles_upload_cached_animation")
+                w.grab().save(str(self.report.with_name(self.report.stem + "-animation.png")))
+                w.open_library()
+                self.step = 25
+            elif self.step == 25 and not w.library_dialog.io_busy:
+                w.library_dialog.title.setText("Animation smoke")
+                w.library_dialog.backup(3)
+                self.step = 26
+            elif self.step == 26 and not w.library_dialog.io_busy and not w.library_dialog.serial_busy and w.library_dialog.collection:
+                assert len(w.library_dialog.preview.animation) == 2
+                from .library.restore import make_plan
+                w.library_dialog.begin_restore(make_plan(w.library_dialog.collection, w.snapshot, ["add"]))
+                self.step = 27
+            elif self.step == 27 and not w.busy and not w.library_dialog.serial_busy and not w.library_dialog.io_busy:
+                assert len(w.snapshot.scenes) == 4 and w.snapshot.scenes[-1].type == 2
+                assert self.reads == 0
+                self.results.append("animation_library_preview_restore_no_reads")
                 self.finish()
         except Exception as error:
             log.exception("Bundled smoke failed")

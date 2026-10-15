@@ -116,6 +116,15 @@ class DeviceClient:
         if not caps.supports_scene_read:
             raise ValueError("Для preview сохранённых сцен нужна прошивка с чтением изображений (1.1).")
         total = 24 + scene.width * scene.height * 2
+        if scene.type == 2:
+            if not caps.supports_animation:
+                raise ValueError("Для анимаций нужна firmware 1.6.")
+            record = self.transport.request(COMMANDS["asset_info"], struct.pack("<II", scene.id, scene.checksum), timeout=10)
+            if len(record) != 4:
+                raise ValueError("Неверный размер animation asset.")
+            total = struct.unpack("<I", record)[0]
+            if not 24 < total <= 512 * 1024:
+                raise ValueError("Неверный размер animation asset.")
         if total > caps.max_asset_size:
             raise ValueError("Сцена превышает допустимый размер.")
         data = bytearray()
@@ -125,13 +134,13 @@ class DeviceClient:
             offset = len(data)
             count = min(caps.max_upload_chunk, total - offset)
             reply = self.transport.request(COMMANDS["read_scene"],
-                struct.pack("<IIIH", scene.id, scene.checksum, offset, count))
+                struct.pack("<IIIH", scene.id, scene.checksum, offset, count), timeout=10 if offset == 0 else 5)
             if len(reply) != 4 + count or struct.unpack_from("<I", reply)[0] != offset:
                 raise ValueError("Неверный фрагмент preview от заколки.")
             data.extend(reply[4:])
             progress(len(data), total)
         info = parse_asset(data)
-        if (info["width"], info["height"], info["payload_crc"]) != (scene.width, scene.height, scene.checksum):
+        if (info["width"], info["height"], info["payload_crc"], info.get("type", 1)) != (scene.width, scene.height, scene.checksum, scene.type):
             raise ValueError("Сцена изменилась во время чтения. Выбери её заново.")
         return bytes(data)
 
@@ -156,10 +165,14 @@ class DeviceClient:
         info = parse_asset(data)
         before = self.snapshot()
         caps = before.capabilities
+        if info.get("type") == 2 and not caps.supports_animation:
+            raise ValueError("Для загрузки GIF нужна firmware 1.6.")
         if expected_checksum is not None:
             self._check_scene(before, scene_id, expected_checksum)
         if info["width"] > caps.display_width or info["height"] > caps.display_height:
             raise ValueError("Размер сцены больше экрана подключённой заколки.")
+        if info.get("type") == 2 and (info["x"] + info["width"] > caps.display_width or info["y"] + info["height"] > caps.display_height):
+            raise ValueError("Положение анимации не помещается на этом экране.")
         estimate = estimate_storage(len(data), caps)
         if not estimate.fits:
             raise ValueError(estimate.reason)
@@ -170,7 +183,8 @@ class DeviceClient:
             raise ValueError("Scene ID must be 1–8")
         log.info("Upload start port=%s scene=%s bytes=%s storage_before=%s", before.port,
                  scene_id, len(data), caps.storage_free)
-        self.transport.request(COMMANDS["upload_begin"], struct.pack("<III", scene_id, len(data), zlib.crc32(data)))
+        command = "upload_begin_typed" if caps.supports_animation else "upload_begin"
+        self.transport.request(COMMANDS[command], struct.pack("<III", scene_id, len(data), zlib.crc32(data)))
         for offset in range(0, len(data), caps.max_upload_chunk):
             if cancelled():
                 raise InterruptedError("Загрузка остановлена. Предыдущая сцена сохранена.")
@@ -180,7 +194,7 @@ class DeviceClient:
         self.transport.request(COMMANDS["upload_end"], timeout=20)
         after = self.snapshot()
         scene = next((s for s in after.scenes if s.id == scene_id), None)
-        if scene is None or scene.checksum != info["payload_crc"] or (scene.width, scene.height) != (info["width"], info["height"]):
+        if scene is None or scene.type != info.get("type", 1) or scene.checksum != info["payload_crc"] or (scene.width, scene.height) != (info["width"], info["height"]):
             raise ValueError("Заколка не подтвердила сохранённую сцену.")
         if not scene.active:
             self.transport.request(COMMANDS["activate"], struct.pack("<I", scene_id))

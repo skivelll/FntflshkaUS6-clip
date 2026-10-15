@@ -102,7 +102,7 @@ void manifest_sort(Manifest *manifest)
 bool manifest_upsert(Manifest *manifest, const ManifestScene *scene)
 {
     if (scene->id == 0 || scene->id > MANIFEST_MAX_SCENES ||
-        scene->type != ASSET_TYPE_STATIC || !scene->width || !scene->height ||
+        (scene->type != ASSET_TYPE_STATIC && scene->type != ASSET_TYPE_ANIMATION) || !scene->width || !scene->height ||
         scene->width > ASSET_MAX_WIDTH || scene->height > ASSET_MAX_HEIGHT ||
         !valid_filename(scene->id, scene->filename)) return false;
     for (size_t i = 0; i < manifest->count; ++i) {

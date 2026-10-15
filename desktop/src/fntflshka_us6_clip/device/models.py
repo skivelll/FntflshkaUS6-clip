@@ -34,6 +34,14 @@ class Capabilities:
     def supports_transitions(self):
         return bool(self.reserved & 8)
 
+    @property
+    def supports_diagnostics(self):
+        return bool(self.reserved & 16)
+
+    @property
+    def supports_animation(self):
+        return bool(self.reserved & 32)
+
     @classmethod
     def decode(cls, data):
         if len(data) != 32:

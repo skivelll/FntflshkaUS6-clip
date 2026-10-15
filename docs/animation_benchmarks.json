@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-15",
+  "hardware": "Waveshare ESP32-C6-LCD-1.47",
+  "firmware": [
+    1,
+    5
+  ],
+  "base_commit": "bec7b80",
+  "esp_idf": "5.5.3",
+  "platformio_platform": "espressif32@6.13.0",
+  "firmware_bin_bytes": 361152,
+  "firmware_bin_sha256": "46f167092762dc7b062219bed53aa5c6079dfab3aa31e4f9eae761b2890aba9b",
+  "storage_total": 2031616,
+  "storage_free": 462848,
+  "user_assets_byte_identical": true,
+  "temporary_scene_deleted": 8,
+  "restored_playlist": {
+    "enabled": true,
+    "interval_ms": 6000,
+    "ids": [
+      1,
+      5,
+      7,
+      6
+    ],
+    "transition": 3
+  },
+  "cases": [
+    {
+      "width": 96,
+      "height": 96,
+      "payload_bytes": 18432,
+      "heap_free_before": 419848,
+      "heap_largest_before": 401408,
+      "heap_min_after": 409488,
+      "validate_us": 29380,
+      "read_ms_per_frame": 4.0608,
+      "render_ms_per_frame": 120.06766666666667,
+      "measured_render_fps_ceiling": 8.328636907521592,
+      "usb_ping_median_ms": 19.991050008684397,
+      "usb_read_bytes_per_second": 16291.068502709113,
+      "upload_total_seconds": 2.2067014999920502,
+      "upload_effective_bytes_per_second": 8363.61419977577,
+      "upload_seconds_before_rx_drain": 7.936307600000873,
+      "upload_speedup": 3.596457246269812
+    },
+    {
+      "width": 128,
+      "height": 128,
+      "payload_bytes": 32768,
+      "heap_free_before": 419848,
+      "heap_largest_before": 401408,
+      "heap_min_after": 409488,
+      "validate_us": 39852,
+      "read_ms_per_frame": 7.606199999999999,
+      "render_ms_per_frame": 160.669,
+      "measured_render_fps_ceiling": 6.223976000348543,
+      "usb_ping_median_ms": 20.006749997264706,
+      "usb_read_bytes_per_second": 16562.145648442718,
+      "upload_total_seconds": 2.985095799987903,
+      "upload_effective_bytes_per_second": 10985.242081722432,
+      "upload_seconds_before_rx_drain": 13.143855899979826,
+      "upload_speedup": 4.4031604948936955
+    },
+    {
+      "width": 320,
+      "height": 172,
+      "payload_bytes": 110080,
+      "heap_free_before": 419848,
+      "heap_largest_before": 401408,
+      "heap_min_after": 409488,
+      "validate_us": 111436,
+      "read_ms_per_frame": 28.1472,
+      "render_ms_per_frame": 219.239,
+      "measured_render_fps_ceiling": 4.561232262508039,
+      "usb_ping_median_ms": 19.985999999335036,
+      "usb_read_bytes_per_second": 16726.884809167314,
+      "upload_total_seconds": 6.3369869000162,
+      "upload_effective_bytes_per_second": 17374.81893795907,
+      "upload_seconds_before_rx_drain": 41.241809500003,
+      "upload_speedup": 6.50811026607891
+    }
+  ]
+}

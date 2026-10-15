@@ -19,6 +19,8 @@ COMMANDS = {
     "scene_details": 12, "rename": 13, "reorder": 14,
     "get_playlist": 15, "set_playlist": 16,
     "get_transition": 17, "set_playlist_effect": 18,
+    "bench_active": 19,
+    "asset_info": 20, "upload_begin_typed": 21,
 }
 
 

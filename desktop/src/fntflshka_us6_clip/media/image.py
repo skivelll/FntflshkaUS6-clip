@@ -22,6 +22,8 @@ class Placement:
 class PreparedImage:
     asset: bytes
     preview: Image.Image
+    frames: tuple = ()
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,9 @@ class SceneSource:
 
 def scene_canvas(source: SceneSource):
     info = parse_asset(source.asset)
+    if info.get("type") == 2:
+        from .animation import preview_frames
+        return preview_frames(source.asset, source.target)[0][0].convert("RGBA")
     pixels = decode_rgb565(source.asset[24:], (info["width"], info["height"]))
     if not 1 <= source.target[0] <= 320 or not 1 <= source.target[1] <= 172 or pixels.width > source.target[0] or pixels.height > source.target[1]:
         raise ValueError("Сохранённая сцена не подходит для этого экрана.")

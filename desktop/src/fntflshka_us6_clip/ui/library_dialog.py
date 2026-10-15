@@ -177,7 +177,10 @@ class LibraryDialog(QDialog):
 
     def select_scene(self, row):
         if 0 <= row < len(self.previews):
-            self.preview.set_image(self.previews[row])
+            if isinstance(self.previews[row], tuple):
+                self.preview.set_animation(self.previews[row])
+            else:
+                self.preview.set_image(self.previews[row])
         else:
             self.preview.clear_image()
 

@@ -26,6 +26,9 @@ Firmware development setup ниже остаётся отдельным workflow
 [Автономный плейлист статичных сцен](docs/playlist.md) на firmware 1.3:
 кнопка «Плейлист…», выбранный порядок и общий интервал; работает без приложения.
 
+[GIF-анимации](docs/animation_format.md) с firmware1.6: компактный или полноэкранный
+профиль, точный preview, safe upload и автономный loop. Static asset v1 сохранён.
+
 ## Windows development (primary workflow)
 
 Use native Windows 10/11, Git for Windows and Python 3.12 or 3.13. Python

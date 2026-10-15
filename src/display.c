@@ -123,9 +123,21 @@ bool display_draw_rgb565_stream(FILE *file, uint16_t width, uint16_t height)
 {
     if (!file || !width || !height || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT)
         return false;
-    const int x = (DISPLAY_WIDTH - width) / 2;
-    const int y = (DISPLAY_HEIGHT - height) / 2;
     display_fill(0x0000);
+    return display_update_rgb565_stream(file, width, height);
+}
+
+bool display_update_rgb565_stream(FILE *file, uint16_t width, uint16_t height)
+{
+    return display_update_rgb565_at(file, width, height, (DISPLAY_WIDTH - width) / 2,
+                                   (DISPLAY_HEIGHT - height) / 2);
+}
+
+bool display_update_rgb565_at(FILE *file, uint16_t width, uint16_t height, int x, int y)
+{
+    if (!file || !width || !height || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT)
+        return false;
+    if (x < 0 || y < 0 || x + width > DISPLAY_WIDTH || y + height > DISPLAY_HEIGHT) return false;
     for (int row = 0; row < height; row += LCD_STRIP_HEIGHT) {
         const int rows = height - row < LCD_STRIP_HEIGHT ? height - row : LCD_STRIP_HEIGHT;
         const size_t count = (size_t)width * rows;

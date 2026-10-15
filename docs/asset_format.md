@@ -1,6 +1,8 @@
 # FntflshkaUS6 clip asset format v1
 
-Static RGB565 image only. All integers are unsigned little-endian. The file has
+This page specifies static RGB565 type 1. Firmware 1.6 optionally adds
+[animation type 2](animation_format.md), retaining version 1 and this static layout.
+All integers here are unsigned little-endian. The file has
 a 24-byte header followed by exactly `width * height * 2` bytes of row-major
 pixels. Each pixel is a little-endian RGB565 value (R5:G6:B5); alpha is
 composited by the converter before encoding.
@@ -18,7 +20,7 @@ composited by the converter before encoding.
 | 16 | 4 | payload CRC32 | IEEE CRC32 of pixel bytes |
 | 20 | 4 | header CRC32 | IEEE CRC32 of bytes 0–19 |
 
-Maximum file size is 110104 bytes. The firmware checks both CRCs, dimensions,
+Maximum static file size is 110104 bytes. The firmware checks both CRCs, dimensions,
 type, version, declared size and actual file length before displaying an asset.
 The image is centered without stretching. Pixels outside a smaller image are
 black. No full-screen framebuffer is allocated; the display streams 8 rows at

@@ -11,9 +11,9 @@ import zipfile
 from ..core.asset import parse_asset
 
 FORMAT = "fntflshka-us6-clip-collection"
-MAX_ARCHIVE = 2_000_000
+MAX_ARCHIVE = 8 * 512 * 1024 + 65536
 MAX_MANIFEST = 16384
-MAX_ASSET = 110104
+MAX_ASSET = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ def from_snapshot(snapshot, assets, title, selected_id=None):
         if data is None:
             raise ValueError("Не все сцены загружены в RAM. Дождись завершения загрузки.")
         info = parse_asset(data)
-        if (info["width"], info["height"], info["payload_crc"]) != (scene.width, scene.height, scene.checksum):
+        if (info["width"], info["height"], info["payload_crc"], info.get("type", 1)) != (scene.width, scene.height, scene.checksum, scene.type):
             raise ValueError("Кэш сцены устарел. Обнови подключение.")
         scenes.append(CollectionScene(scene.id, scene.title, data))
     active = next((s.id for s in snapshot.scenes if s.active and any(item.id == s.id for item in scenes)), None)

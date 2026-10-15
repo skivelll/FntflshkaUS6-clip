@@ -162,7 +162,9 @@ class EditorGuiTests(unittest.TestCase):
                 timer.timeout.connect(move)
                 timer.start(10)
                 try:
-                    self.assertTrue(wait_for(lambda: len(events) >= 40))
+                    self.assertTrue(wait_for(lambda: len(events) >= 40
+                                             and len({key for key, stale in frames}) >= 2
+                                             and any(stale for key, stale in frames)))
                     self.assertGreaterEqual(len({key for key, stale in frames}), 2, gesture)
                     self.assertTrue(any(stale for key, stale in frames), gesture)
                     if gesture == "drag":

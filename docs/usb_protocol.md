@@ -52,7 +52,8 @@ than physical Flash size to decide whether content fits.
 
 Capability flag bit 0 advertises READ_SCENE; bit 1 advertises scene metadata
 (GET_SCENE_DETAILS/RENAME_SCENE/REORDER_SCENES); bit 2 advertises autonomous
-playlist GET_PLAYLIST/SET_PLAYLIST (firmware 1.3); other bits are reserved.
+playlist GET_PLAYLIST/SET_PLAYLIST (firmware 1.3); bit3 transition modes (1.4),
+bit4 active-scene diagnostics (1.5), bit5 RGB565 animations (1.6). Bits6–7 are reserved.
 Firmware 1.0 returns zero here and does not implement command 11. This is an
 additive protocol v1 extension: existing frames, commands, response sizes and
 asset format are unchanged. Old hosts may ignore flags. New hosts must check
@@ -128,3 +129,30 @@ Effects: 0 cut with brief backlight blanking, 1 reveal left-to-right, 2 right-to
 42 bytes, all reserved fields zero. Legacy command 16 selects effect 0. Thus old
 hosts keep their original response layouts. New hosts check bit 3 and use 18 for
 one atomic settings write; do not chain separate interval/effect commits.
+
+Firmware 1.5 diagnostics (capability byte 7 bit 4): BENCH_ACTIVE (19), empty
+request, returns 80 bytes = twenty little-endian u32 values. Record version 1:
+version, heap_free_before, largest_block_before, minimum_heap_before,
+internal_8bit_free_before, dma_free_before, validate_us, active_id, asset_crc,
+width, height, pixel_payload_bytes, read_samples (=5), read_us_total,
+render_samples (=3), render_us_total, scratch_bytes (=5120), heap_free_after,
+largest_block_after, minimum_heap_after. Timing units are microseconds; heap
+values are bytes. It requires a valid registered active static asset, returns
+INVALID_ASSET otherwise, and rejects an active upload with BAD_STATE. It does
+not mutate files/manifest/settings; it redraws the same active frame without
+clearing between repeats and delays the next playlist tick until measurement
+ends. Hosts must check bit 4; this flag does not advertise animation support.
+See [measured results and planning](animation_planning.md).
+
+Firmware 1.6 animation extension (capability byte7 bit5): asset v1 type2 as
+specified in docs/animation_format.md. GET_ASSET_INFO (20) accepts ID u32 and
+expected payload CRC u32, returns actual file length u32. READ_SCENE framing is
+unchanged; file bounds now include validated type2 files up to512 KiB. Hosts
+check type/dimensions and every CRC before preview. UPLOAD_BEGIN_TYPED (21) has
+the same 12-byte payload as BEGIN5; new hosts use21 when bit5 is advertised.
+Legacy BEGIN5 rejects overwriting an existing animation ID with BAD_STATE.
+Static assets remain byte-identical and <=110104 bytes; capabilities max file
+is512 KiB for all supported types. A/B commit and v1 framing/sequence/ACK/NACK
+are unchanged. Animation playback uses a bounded index and5120-byte strip;
+RESET starts at frame0. Older GUIs/firmware do not support mixed animation
+collections: use the new desktop version and do not downgrade with type2 scenes.

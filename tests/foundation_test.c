@@ -74,6 +74,29 @@ static void test_protocol(void)
                          &sequence, &command) == PARSE_ERROR && error == ERR_BAD_LENGTH);
 }
 
+static void test_animation_asset(void)
+{
+    uint8_t data[68] = {0};
+    memcpy(data, "HCAS", 4);
+    data[4] = 1; data[5] = 2; data[6] = 1;
+    wire_put16(data + 8, 1); wire_put16(data + 10, 1);
+    wire_put32(data + 12, 44);
+    wire_put16(data + 24, 2); wire_put32(data + 32, 2);
+    wire_put32(data + 40, 40); wire_put32(data + 44, 170);
+    wire_put32(data + 52, 42); wire_put32(data + 56, 250);
+    data[65] = 0xF8; data[66] = 0x1F;
+    wire_put32(data + 48, wire_crc32(data + 64, 2));
+    wire_put32(data + 60, wire_crc32(data + 66, 2));
+    wire_put32(data + 16, wire_crc32(data + 24, 44));
+    wire_put32(data + 20, wire_crc32(data, 20));
+    AssetHeader header;
+    assert(asset_validate_bytes(data, sizeof(data), &header) && header.type == 2);
+    data[66] ^= 1;
+    wire_put32(data + 16, wire_crc32(data + 24, 44));
+    wire_put32(data + 20, wire_crc32(data, 20));
+    assert(!asset_validate_bytes(data, sizeof(data), NULL)); // frame CRC, despite valid outer CRCs
+}
+
 static void test_manifest(void)
 {
     Manifest m = {0};
@@ -133,6 +156,7 @@ static void test_interrupted_upload(void)
 int main(void)
 {
     test_asset();
+    test_animation_asset();
     test_protocol();
     test_manifest();
     test_interrupted_upload();

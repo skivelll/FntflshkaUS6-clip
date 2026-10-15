@@ -37,15 +37,26 @@ def encode_asset(image: Image.Image, background: tuple[int, int, int] = (0, 0, 0
 
 
 def parse_asset(data: bytes) -> dict[str, int]:
+    if len(data) > 512 * 1024:
+        raise ValueError("asset exceeds 512 KiB")
     if len(data) < HEADER.size:
         raise ValueError("asset header is incomplete")
     magic, version, kind, pixel_format, reserved, width, height, size, crc, header_crc = HEADER.unpack_from(data)
-    if magic != b"HCAS" or version != 1 or kind != 1 or pixel_format != 1 or reserved != 0:
+    if magic != b"HCAS" or version != 1 or kind not in (1, 2) or pixel_format != 1 or reserved != 0:
         raise ValueError("unsupported asset header")
     if not 1 <= width <= MAX_WIDTH or not 1 <= height <= MAX_HEIGHT:
         raise ValueError("invalid dimensions")
-    if size != width * height * 2 or len(data) != HEADER.size + size:
+    if (kind == 1 and size != width * height * 2) or len(data) != HEADER.size + size:
         raise ValueError("invalid payload size")
     if zlib.crc32(data[:20]) != header_crc or zlib.crc32(data[24:]) != crc:
         raise ValueError("asset checksum mismatch")
+    if kind == 2:
+        from .animation import parse_animation
+        return parse_animation(data, width, height, size, crc)
     return {"width": width, "height": height, "payload_bytes": size, "payload_crc": crc}
+
+
+def first_frame(data):
+    info = parse_asset(data)
+    offset = info["frames"][0][0] if info.get("type") == 2 else 24
+    return data[offset:offset + info["width"] * info["height"] * 2]

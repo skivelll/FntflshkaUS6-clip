@@ -15,7 +15,7 @@ class MockTransport:
 
     def __init__(self, free=None, disconnect_after=None):
         self.caps = mock_capabilities()
-        self.caps = replace(self.caps, reserved=15)
+        self.caps = replace(self.caps, reserved=47, max_asset_size=512 * 1024)
         from .playlist import Playlist
         self.playlist = Playlist()
         if free is not None:
@@ -34,7 +34,7 @@ class MockTransport:
     def request(self, command, payload=b"", timeout=5):
         if not self.connected:
             raise OSError("Mock disconnect")
-        if command in (5, 8, 9):
+        if command in (5, 21, 8, 9):
             self.playlist = replace(self.playlist, enabled=False)
         if command == 15:
             return self.playlist.encode()
@@ -74,7 +74,13 @@ class MockTransport:
                 output.extend(struct.pack("<IIBHHIBB", s.id, s.order, s.type, s.width, s.height,
                                           s.checksum, s.active, len(name)) + name)
             return bytes(output)
-        if command == 5:
+        if command == 20:
+            scene_id, checksum = struct.unpack("<II", payload)
+            scene = next((s for s in self.scenes if s.id == scene_id), None)
+            if scene is None or scene.checksum != checksum:
+                raise DeviceNack(9)
+            return struct.pack("<I", len(self.assets[scene_id]))
+        if command in (5, 21):
             scene_id, size, crc = struct.unpack("<III", payload)
             if size + 8192 > self.caps.storage_free:
                 raise DeviceNack(4)
@@ -107,7 +113,7 @@ class MockTransport:
             reclaimed = len(self.slot_files.get(filename, b""))
             self.slot_files[filename] = bytes(data)
             self.scenes = [replace(s, active=False) for s in self.scenes if s.id != scene_id]
-            self.scenes.append(Scene(scene_id, old.order if old else len(self.scenes), 1, info["width"], info["height"],
+            self.scenes.append(Scene(scene_id, old.order if old else len(self.scenes), info.get("type", 1), info["width"], info["height"],
                                      info["payload_crc"], True, filename, old.title if old else ""))
             self.scenes.sort(key=lambda s: (s.order, s.id))
             self.file_sizes[scene_id] = size

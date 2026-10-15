@@ -11,7 +11,7 @@ from .preview import Preview
 from .widgets import PlacementControls
 from .storage_bar import StorageBar
 from ..scenes.models import estimate_storage, next_scene_id, storage_projection
-from ..core.asset import parse_asset
+from ..core.asset import parse_asset, first_frame
 from ..media.rgb565 import decode_rgb565
 from ..media.image import SceneSource
 
@@ -28,6 +28,7 @@ class MainWindow(QMainWindow):
     request_collection = Signal(object)
     request_restore = Signal(object)
     request_playlist = Signal(object)
+    request_decode = Signal(object, bytes)
 
     def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None, library_folder=None):
         super().__init__()
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self.preview_cancel = Event()
         self.scene_previews = {}
         self.scene_icons = {}
+        self.scene_animations = {}
+        self.gif_options = ("compact", 0, 0, 1)
         self.cache_loading = False
         self.cache_device = None
         self.replace_target = None
@@ -135,6 +138,9 @@ class MainWindow(QMainWindow):
         self.add_button = QPushButton("+ добавить")
         self.add_button.clicked.connect(self.choose_image)
         sidebar.addWidget(self.add_button)
+        self.gif_button = QPushButton("Настройки GIF…")
+        self.gif_button.clicked.connect(self.configure_gif)
+        self.gif_button.hide()
         body.addLayout(sidebar)
         self.preview = Preview()
         self.preview.drag_started.connect(self.begin_drag)
@@ -150,11 +156,12 @@ class MainWindow(QMainWindow):
         controls_scroll.setWidget(self.controls)
         body.addWidget(controls_scroll)
         layout.addLayout(body, 1)
-        self.image_label = QLabel("Перетащи PNG, JPG или WEBP в окно")
+        self.image_label = QLabel("Перетащи PNG, JPG, WEBP или GIF в окно")
         self.image_label.setObjectName("muted")
         self.image_label.setTextFormat(Qt.PlainText)
         image_row = QHBoxLayout()
         image_row.addWidget(self.image_label, 1)
+        image_row.addWidget(self.gif_button)
         self.cancel_edit_button = QPushButton("Отменить изменения")
         self.cancel_edit_button.clicked.connect(self.cancel_edit)
         self.cancel_edit_button.hide()
@@ -245,6 +252,8 @@ class MainWindow(QMainWindow):
             self.image_thread.finished.connect(self.image_worker.deleteLater)
             self.request_render.connect(self.image_worker.render)
             self.image_worker.ready.connect(self.on_rendered)
+            self.request_decode.connect(self.image_worker.decode_preview)
+            self.image_worker.decoded.connect(self.on_animation_preview)
             self.image_worker.failed.connect(self.on_render_failed)
             self.image_thread.start()
 
@@ -259,10 +268,12 @@ class MainWindow(QMainWindow):
             if identity != self.cache_device:
                 self.scene_previews.clear()
                 self.scene_icons.clear()
+                self.scene_animations.clear()
                 self.preview_key = None
                 self.cache_device = identity
             valid = {(snapshot.port, s.id, s.checksum, s.width, s.height) for s in snapshot.scenes}
             self.scene_previews = {k: v for k, v in self.scene_previews.items() if k in valid}
+            self.scene_animations = {k: v for k, v in self.scene_animations.items() if k in valid}
         if snapshot and (self.message.text() == self.connection_message or self.message.text() in (
                 "Заколка не найдена. Подключи её по USB-C.",
                 "Связь с заколкой потеряна. Подключи её по USB-C.")):
@@ -306,7 +317,7 @@ class MainWindow(QMainWindow):
         self.update_memory()
 
     def choose_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Добавить картинку", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Добавить картинку", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp *.gif)")
         if path:
             self.import_image(Path(path))
 
@@ -316,6 +327,9 @@ class MainWindow(QMainWindow):
 
     @property
     def image_source(self):
+        if self.source_asset is None and self.source_path and self.source_path.suffix.lower() == ".gif":
+            from ..media.animation import GifSource
+            return GifSource(self.source_path, *self.gif_options)
         return self.source_asset if self.source_asset is not None else self.source_path
 
     @property
@@ -332,6 +346,9 @@ class MainWindow(QMainWindow):
         return next((s for s in self.snapshot.scenes if s.id == scene_id), None) if self.snapshot else None
 
     def update_scene_actions(self, *args):
+        self.gif_button.setVisible(bool(self.source_path and self.source_path.suffix.lower() == ".gif"
+                                        and self.source_asset is None and self.selected_scene() is None))
+        self.gif_button.setEnabled(not self.busy and not self.cache_loading and not self.closing)
         self.library_button.setEnabled(not self.busy and not self.closing)
         self.playlist_button.setEnabled(bool(self.snapshot and self.snapshot.capabilities.supports_playlist)
                                         and not self.busy and not self.cache_loading and not self.closing)
@@ -353,7 +370,7 @@ class MainWindow(QMainWindow):
         if scene:
             self.scene_info.setText(
                 f"Сцена {scene.id} · {'на экране' if scene.active else 'сохранена'}\n"
-                "Preview из памяти приложения; изменение порядка не запускает слайд-шоу.")
+                f"{scene.width}×{scene.height} · {'GIF' if scene.type == 2 else 'картинка'} · preview в RAM")
         else:
             self.scene_info.setText("Выбери сцену на заколке.")
         self.controls.setEnabled(scene is None and not self.busy and not self.cache_loading)
@@ -450,7 +467,7 @@ class MainWindow(QMainWindow):
             item.setIcon(self.scene_icons[data])
             return
         info = parse_asset(data)
-        pixels = decode_rgb565(data[24:], (info["width"], info["height"]))
+        pixels = decode_rgb565(first_frame(data), (info["width"], info["height"]))
         from PySide6.QtGui import QImage
         image = QImage(pixels.tobytes(), pixels.width, pixels.height, pixels.width * 3, QImage.Format_RGB888).copy()
         icon = QIcon(QPixmap.fromImage(image).scaled(72, 40, Qt.KeepAspectRatio, Qt.FastTransformation))
@@ -472,12 +489,28 @@ class MainWindow(QMainWindow):
             return
         info = parse_asset(data)
         caps = self.snapshot.capabilities
+        if info.get("type") == 2:
+            if key in self.scene_animations:
+                self.preview.set_animation(self.scene_animations[key])
+            else:
+                self.request_decode.emit((self.cache_device, key), data)
+            self.image_label.setText(f"{next(s for s in self.snapshot.scenes if s.id == key[1]).label} · GIF из памяти")
+            return
         pixels = decode_rgb565(data[24:], (info["width"], info["height"]))
         canvas = Image.new("RGB", (caps.display_width, caps.display_height), "black")
         canvas.paste(pixels, ((caps.display_width - pixels.width) // 2, (caps.display_height - pixels.height) // 2))
         self.preview.set_image(canvas)
         scene = next(s for s in self.snapshot.scenes if s.id == key[1])
         self.image_label.setText(f"{scene.label} · preview из памяти")
+
+    @Slot(object, object)
+    def on_animation_preview(self, request, frames):
+        identity, key = request
+        if identity != self.cache_device or key not in self.scene_previews:
+            return
+        self.scene_animations[key] = frames
+        if key == self.preview_key:
+            self.preview.set_animation(frames)
 
     @Slot(bool)
     def on_cache_state(self, loading):
@@ -535,7 +568,7 @@ class MainWindow(QMainWindow):
         if not scene or self.busy or self.cache_loading:
             return
         target = (scene.id, scene.checksum, self.snapshot.port)
-        path, _ = QFileDialog.getOpenFileName(self, f"Новая картинка для «{scene.label}»", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp)")
+        path, _ = QFileDialog.getOpenFileName(self, f"Новая картинка для «{scene.label}»", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp *.gif)")
         if path:
             self.import_image(Path(path), replacement=target)
 
@@ -626,7 +659,9 @@ class MainWindow(QMainWindow):
             return
         expected_port = self.snapshot.port
         text = f"Удалить сцену {scene.id} с заколки? Это действие нельзя отменить."
-        projection = storage_projection(self.snapshot.capabilities, scene=scene)
+        key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height)
+        cached = self.scene_previews.get(key)
+        projection = storage_projection(self.snapshot.capabilities, scene=scene, asset_size=len(cached) if cached else None)
         text += f"\nФайл сцены: {projection.reclaim:,} Б. Прогноз свободного места: ≈{projection.projected_free:,} Б.\nТочный результат зависит от A/B-файлов и блоков LittleFS и будет показан после удаления."
         if scene.active:
             text += "\n\nЭта сцена сейчас на экране. После удаления включится встроенная демонстрация."
@@ -683,15 +718,24 @@ class MainWindow(QMainWindow):
         self.update_memory()
         self.update_scene_actions()
 
-    def import_image(self, path, replacement=None):
+    def import_image(self, path, replacement=None, gif_options=None):
         if self.busy or self.cache_loading:
             return
+        if Path(path).suffix.lower() == ".gif":
+            if gif_options is None:
+                from .gif_dialog import GifDialog
+                dialog = GifDialog(self, self.gif_options)
+                if not dialog.exec():
+                    return
+                gif_options = dialog.options()
+            self.gif_options = gif_options
         self.restore_editor_controls()
         self.source_asset = None
         self.replace_target = replacement
         self.replace_device_id = self.snapshot.device_id if replacement and self.snapshot else None
         self.operation_error = None
         self.source_path = Path(path)
+        self.gif_button.setVisible(self.source_path.suffix.lower() == ".gif")
         self.source_revision += 1
         self.image_folder = str(self.source_path.resolve().parent)
         self.scenes.clearSelection()
@@ -700,6 +744,15 @@ class MainWindow(QMainWindow):
         self.image_label.setText(self.source_path.name)
         self.message.setText("Готовлю картинку...")
         self.schedule_render()
+
+    def configure_gif(self):
+        if self.source_path and self.source_path.suffix.lower() == ".gif" and not self.busy:
+            from .gif_dialog import GifDialog
+            dialog = GifDialog(self, self.gif_options)
+            if dialog.exec():
+                self.gif_options = dialog.options()
+                self.source_revision += 1
+                self.schedule_render()
 
     def schedule_render(self):
         self.generation += 1
@@ -730,9 +783,14 @@ class MainWindow(QMainWindow):
             return
         self.prepared = prepared
         if self.selected_scene() is None:
-            self.preview.set_image(prepared.preview)
+            if prepared.frames:
+                self.preview.set_animation(prepared.frames)
+            else:
+                self.preview.set_image(prepared.preview)
         self.message.setText("Изменения готовы в preview. Нажми «СОХРАНИТЬ СЦЕНУ», чтобы обновить заколку." if self.source_asset is not None
                              else "Картинка готова. Можно заливать :3")
+        if prepared.summary:
+            self.message.setText(prepared.summary)
         self.update_memory()
 
     @Slot(int, str)
@@ -752,7 +810,9 @@ class MainWindow(QMainWindow):
         self.preview.set_interactive(editable)
         projection = storage_projection(self.snapshot.capabilities) if self.snapshot else None
         if scene:
-            projection = storage_projection(self.snapshot.capabilities, scene=scene)
+            key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height)
+            cached = self.scene_previews.get(key)
+            projection = storage_projection(self.snapshot.capabilities, scene=scene, asset_size=len(cached) if cached else None)
             self.memory.setText(
                 f"Свободно {projection.free:,} / {projection.total:,} Б · серый: занято · бирюзовый: удаляемый файл ≈{projection.reclaim:,} Б\n"
                 f"После удаления: ≈{projection.projected_free:,} Б свободно. A/B и служебные блоки уточнятся после удаления.")
@@ -769,6 +829,9 @@ class MainWindow(QMainWindow):
                     + ("Старый A/B-файл сохраняется; " if self.replace_target else "")
                     + "точный остаток — после ACK.")
                 enabled = estimate.fits and (self.replacement_is_current() if self.replace_target else free_id is not None)
+                if parse_asset(self.prepared.asset).get("type") == 2 and not self.snapshot.capabilities.supports_animation:
+                    enabled = False
+                    self.memory.setText(self.memory.text() + "\nДля GIF нужна firmware 1.6.")
                 if self.replace_target and not self.replacement_is_current():
                     self.memory.setText(self.memory.text() + "\nСцена или устройство изменились: отменить изменения и выбрать сцену заново.")
             else:
@@ -860,7 +923,7 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event):
         urls = event.mimeData().urls()
         if not self.busy and not self.cache_loading and not self.closing and len(urls) == 1 and urls[0].isLocalFile():
-            if Path(urls[0].toLocalFile()).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+            if Path(urls[0].toLocalFile()).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
                 event.acceptProposedAction()
 
     def dropEvent(self, event):

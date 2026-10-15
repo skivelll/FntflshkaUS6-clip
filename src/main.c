@@ -10,6 +10,7 @@
 #include "storage.h"
 #include "usb_service.h"
 #include "playlist.h"
+#include "animation.h"
 
 static uint32_t uptime_ms(void)
 {
@@ -27,13 +28,15 @@ void app_main(void)
 
     while (true) {
         usb_service_poll(&fallback_mode);
+        if (!animation_tick(uptime_ms())) { fallback_mode = true; modes_init(uptime_ms()); }
         if (playlist_tick(uptime_ms())) {
             fallback_mode = !usb_service_show_transition();
             playlist_pause(uptime_ms());
             if (fallback_mode) modes_init(uptime_ms());
         }
         if (fallback_mode) modes_update(uptime_ms());
-        vTaskDelay(pdMS_TO_TICKS(20));
+        const TickType_t pause = pdMS_TO_TICKS(10);
+        vTaskDelay(pause ? pause : 1); // always yield; keep USB responsive between animation frames
     }
 }
 

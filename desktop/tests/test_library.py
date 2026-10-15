@@ -175,7 +175,7 @@ class RestoreTests(unittest.TestCase):
         begins = []
         original = self.transport.request
         def request(command, *args, **kwargs):
-            if command == 5:
+            if command in (5, 21):
                 begins.append(int.from_bytes(args[0][:4], "little"))
             if command == 6 and self.transport.upload[0] == 2:
                 raise OSError("Cable disconnected")

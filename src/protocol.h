@@ -28,6 +28,9 @@ typedef enum {
     CMD_SET_PLAYLIST = 16,
     CMD_GET_TRANSITION = 17,
     CMD_SET_PLAYLIST_EFFECT = 18,
+    CMD_BENCH_ACTIVE = 19,
+    CMD_GET_ASSET_INFO = 20,
+    CMD_UPLOAD_BEGIN_TYPED = 21,
     CMD_ACK = 0x80,
     CMD_NACK = 0x81,
 } ProtocolCommand;

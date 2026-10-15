@@ -76,8 +76,9 @@ class StorageProjection:
         return max(0, min(self.total, self.free - self.upload + self.reclaim))
 
 
-def storage_projection(caps, upload=0, scene=None):
+def storage_projection(caps, upload=0, scene=None, asset_size=None):
     """Logical-file forecast; A/B old files and LittleFS blocks are unknown to v1."""
     used = max(0, caps.storage_total - caps.storage_free)
-    reclaim = min(used, 24 + scene.width * scene.height * 2) if scene is not None else 0
+    logical = asset_size if asset_size is not None else (24 + scene.width * scene.height * 2 if scene and scene.type == 1 else 0)
+    reclaim = min(used, logical) if scene is not None else 0
     return StorageProjection(caps.storage_total, caps.storage_free, used, max(0, upload), reclaim)

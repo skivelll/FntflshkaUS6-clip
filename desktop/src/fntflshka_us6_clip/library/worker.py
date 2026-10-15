@@ -38,7 +38,10 @@ class LibraryWorker(QObject):
                 self.listed.emit(rows)
             elif action == "load":
                 c = load(payload)
-                previews = [scene_canvas(SceneSource(s.asset, c.display)).convert("RGB") for s in c.scenes]
+                from ..core.asset import parse_asset
+                from ..media.animation import preview_frames
+                previews = [preview_frames(s.asset, c.display) if parse_asset(s.asset).get("type") == 2
+                            else scene_canvas(SceneSource(s.asset, c.display)).convert("RGB") for s in c.scenes]
                 self.loaded.emit(c, previews)
             elif action == "import":
                 c = load(payload)

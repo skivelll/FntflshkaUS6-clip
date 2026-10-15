@@ -12,6 +12,7 @@
 #include "storage.h"
 #include "upload_guard.h"
 #include "wire.h"
+#include "animation.h"
 
 #define STORAGE_ROOT "/littlefs"
 #define MANIFEST_PATH STORAGE_ROOT "/manifest.json"
@@ -75,6 +76,7 @@ static bool validate_file(FILE *file, uint32_t size, AssetHeader *out)
         remaining -= count;
     }
     if (~crc != header.payload_crc || fgetc(file) != EOF) return false;
+    if (header.type == ASSET_TYPE_ANIMATION && !animation_validate(file, &header)) return false;
     if (out) *out = header;
     return true;
 }
@@ -186,7 +188,7 @@ ProtocolError storage_upload_end(void)
     const char slot = old && strchr(old->filename, 'a') ? 'b' : 'a';
     ManifestScene scene = {
         .id = id, .order = old ? old->order : (uint32_t)manifest.count,
-        .type = ASSET_TYPE_STATIC, .width = header.width, .height = header.height,
+        .type = header.type, .width = header.width, .height = header.height,
         .checksum = header.payload_crc,
     };
     snprintf(scene.filename, sizeof(scene.filename), "scenes/%04u%c.bin", (unsigned)id, slot);
@@ -238,7 +240,7 @@ static FILE *open_verified_scene(const ManifestScene *selected)
     AssetHeader header;
     const bool valid = fstat(fileno(file), &info) == 0 && info.st_size <= ASSET_MAX_FILE &&
                        validate_file(file, (uint32_t)info.st_size, &header) &&
-                       header.width == selected->width && header.height == selected->height &&
+                       header.width == selected->width && header.height == selected->height && header.type == selected->type &&
                        header.payload_crc == selected->checksum &&
                        fseek(file, ASSET_HEADER_SIZE, SEEK_SET) == 0;
     if (!valid) { fclose(file); return NULL; }
@@ -254,14 +256,16 @@ ProtocolError storage_read_scene(uint32_t id, uint32_t checksum, uint32_t offset
     const ManifestScene *selected = manifest_find(&manifest, id);
     if (!selected) return ERR_NOT_FOUND;
     if (selected->checksum != checksum) return ERR_BAD_STATE;
-    const uint32_t size = ASSET_HEADER_SIZE + (uint32_t)selected->width * selected->height * 2U;
-    if (offset >= size) return ERR_BAD_LENGTH;
     char path[48];
     snprintf(path, sizeof(path), STORAGE_ROOT "/%s", selected->filename);
     // Validate once at the start; host validates the complete returned asset CRC.
     FILE *file = offset == 0 ? open_verified_scene(selected) : fopen(path, "rb");
     if (!file) return ERR_INVALID_ASSET;
     struct stat info;
+    if (fstat(fileno(file), &info) != 0 || info.st_size < ASSET_HEADER_SIZE || info.st_size > ASSET_MAX_FILE || offset >= info.st_size) {
+        fclose(file); return ERR_BAD_LENGTH;
+    }
+    const uint32_t size = (uint32_t)info.st_size;
     const size_t count = length < size - offset ? length : size - offset;
     const bool valid = fstat(fileno(file), &info) == 0 && info.st_size == size &&
                        fseek(file, (long)offset, SEEK_SET) == 0 &&

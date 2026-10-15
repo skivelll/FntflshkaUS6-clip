@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QRectF, Signal
+from PySide6.QtCore import Qt, QRectF, Signal, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -13,6 +13,11 @@ class Preview(QWidget):
         super().__init__(parent)
         self.target = (320, 172)
         self.image = QImage()
+        self.animation = ()
+        self.animation_index = 0
+        self.animation_timer = QTimer(self)
+        self.animation_timer.setSingleShot(True)
+        self.animation_timer.timeout.connect(self.advance_frame)
         self.setMinimumSize(320, 220)
         self.interactive = False
         self._drag_origin = None
@@ -74,12 +79,44 @@ class Preview(QWidget):
         event.accept()
 
     def set_image(self, image):
+        self.animation_timer.stop()
+        self.animation = ()
         self.target = image.size
         self.image = QImage(image.tobytes(), image.width, image.height, image.width * 3,
                             QImage.Format_RGB888).copy()
         self.update()
 
+    def set_animation(self, frames):
+        if not frames:
+            self.clear_image()
+            return
+        self.set_image(frames[0][0])
+        self.animation = frames
+        self.animation_index = 0
+        if self.isVisible():
+            self.animation_timer.start(frames[0][1])
+
+    def advance_frame(self):
+        if not self.animation:
+            return
+        frames = self.animation
+        index = (self.animation_index + 1) % len(frames)
+        self.set_image(frames[index][0])
+        self.animation, self.animation_index = frames, index
+        self.animation_timer.start(frames[index][1])
+
+    def hideEvent(self, event):
+        self.animation_timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.animation:
+            self.animation_timer.start(self.animation[self.animation_index][1])
+
     def clear_image(self):
+        self.animation_timer.stop()
+        self.animation = ()
         self.image = QImage()
         self.update()
 

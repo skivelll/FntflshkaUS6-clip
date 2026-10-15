@@ -46,6 +46,8 @@ def make_plan(collection, snapshot, targets, metadata=True, activate=True):
         if type(target) is not int or not 1 <= target <= 8 or target in assigned:
             raise ValueError("Целевая сцена назначена дважды или неверно.")
         info = parse_asset(source.asset)
+        if info.get("type") == 2 and not snapshot.capabilities.supports_animation:
+            raise ValueError("Для восстановления GIF нужна firmware 1.6.")
         caps = snapshot.capabilities
         if len(source.asset) > caps.max_asset_size or info["width"] > caps.display_width or info["height"] > caps.display_height:
             raise ValueError("Asset из коллекции не подходит подключённой заколке.")

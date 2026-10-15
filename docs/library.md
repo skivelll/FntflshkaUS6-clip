@@ -96,7 +96,9 @@ JSON содержит `format="fntflshka-us6-clip-collection"`, `version=1`, `ti
 
 Проверяются: не более 8 уникальных ID 1–8, UTF-8 title до 48 bytes, размеры/CRC
 asset/header, SHA256, наличие ACTIVE, версия/порядок/состав архива. Лимиты:
-2 MB входного ZIP, 16 KiB JSON, 110104 bytes на asset, максимум 9 entries.
+4 MiB+64 KiB входного ZIP, 16 KiB JSON, 512 KiB на asset, максимум 9 entries.
+Firmware1.6 поддерживает animation type2 внутри прежнего контейнера version1;
+preview анимаций готовится в library worker и проигрывается offline из RAM.
 Не принимаются лишние/повторные entries, symlinks, шифрование, посторонние пути,
 неизвестная версия и JSON duplicate keys. ZIP не извлекается на filesystem.
 SHA256/CRC служат контролем целостности, не цифровой подписью.

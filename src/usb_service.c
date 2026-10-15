@@ -15,6 +15,8 @@
 #include "usb_service.h"
 #include "wire.h"
 #include "playlist.h"
+#include "diagnostics.h"
+#include "animation.h"
 
 static const char *TAG = "USB";
 #define FIRMWARE_NAME "FntflshkaUS6 clip"
@@ -28,9 +30,18 @@ static uint32_t now_ms(void)
 
 bool usb_service_show_active(void)
 {
+    animation_stop();
     ManifestScene scene;
     FILE *file = storage_open_active(&scene);
     if (!file) return false;
+    if (scene.type == ASSET_TYPE_ANIMATION) {
+        uint8_t bytes[24]; AssetHeader header;
+        if (fseek(file, 0, SEEK_SET) || fread(bytes, 1, 24, file) != 24 ||
+            asset_parse_header(bytes, 24 + wire_u32(bytes + 12), &header) != ASSET_OK) {
+            fclose(file); return false;
+        }
+        return animation_start(file, &header);
+    }
     const bool drawn = display_draw_rgb565_stream(file, scene.width, scene.height);
     fclose(file);
     if (drawn)
@@ -43,9 +54,11 @@ bool usb_service_show_active(void)
 
 bool usb_service_show_transition(void)
 {
+    animation_stop();
     ManifestScene scene;
     FILE *file = storage_open_active(&scene);
     if (!file) return false;
+    if (scene.type == ASSET_TYPE_ANIMATION) { fclose(file); return usb_service_show_active(); }
     const bool drawn = display_draw_transition(file, scene.width, scene.height,
                                                playlist_get()->transition);
     fclose(file);
@@ -81,6 +94,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
     // Explicit writes/manual selection stop playback first. No automatic retries.
     if (playlist_get()->enabled &&
         ((request->command == CMD_UPLOAD_BEGIN && n == 12) ||
+         (request->command == CMD_UPLOAD_BEGIN_TYPED && n == 12) ||
          (request->command == CMD_SET_ACTIVE_SCENE && n == 4) ||
          (request->command == CMD_DELETE_SCENE && n == 4))) {
         Playlist stopped = *playlist_get();
@@ -97,7 +111,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         const size_t name_length = sizeof(FIRMWARE_NAME) - 1;
         memcpy(reply, FIRMWARE_NAME, name_length);
         reply[name_length] = 1; // Firmware major
-        reply[name_length + 1] = 4; // Firmware minor: playlist transitions
+        reply[name_length + 1] = 6; // Firmware minor: optional RGB565 animation
         reply_size = name_length + 2;
         break;
     }
@@ -110,7 +124,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         wire_put16(reply + 2, DISPLAY_WIDTH);
         wire_put16(reply + 4, DISPLAY_HEIGHT);
         reply[6] = ASSET_PIXEL_RGB565;
-        reply[7] = 15; // READ_SCENE, metadata, playlist, transition modes.
+        reply[7] = 63; // READ_SCENE, metadata, playlist, transitions, diagnostics, animation.
         wire_put32(reply + 8, 4U * 1024U * 1024U);
         wire_put32(reply + 12, 0); // Physical size is not reliably distinct from configured size.
         wire_put32(reply + 16, (uint32_t)total);
@@ -156,6 +170,12 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         break;
     }
     case CMD_UPLOAD_BEGIN:
+        if (n == 12) {
+            const ManifestScene *old = manifest_find(storage_manifest(), wire_u32(p));
+            if (old && old->type == ASSET_TYPE_ANIMATION) { error = ERR_BAD_STATE; break; }
+        }
+        // fall through
+    case CMD_UPLOAD_BEGIN_TYPED:
         error = n == 12 ? storage_upload_begin(wire_u32(p), wire_u32(p + 4),
                                                 wire_u32(p + 8)) : ERR_BAD_LENGTH;
         break;
@@ -171,11 +191,13 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         }
         break;
     case CMD_DELETE_SCENE:
+        if (n == 4) animation_stop();
         error = n == 4 ? storage_delete(wire_u32(p)) : ERR_BAD_LENGTH;
         if (error == ERR_NONE && storage_manifest()->active == 0) {
             *fallback_mode = true;
             modes_init(now_ms());
         }
+        else if (error == ERR_NONE) *fallback_mode = !usb_service_show_active();
         break;
     case CMD_SET_ACTIVE_SCENE:
         error = n == 4 ? storage_activate(wire_u32(p)) : ERR_BAD_LENGTH;
@@ -234,6 +256,23 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         reply[0] = playlist_get()->transition;
         reply_size = 1;
         break;
+    case CMD_GET_ASSET_INFO: {
+        if (n != 8) { error = ERR_BAD_LENGTH; break; }
+        const ManifestScene *selected = manifest_find(storage_manifest(), wire_u32(p));
+        if (!selected || selected->checksum != wire_u32(p + 4)) { error = ERR_BAD_STATE; break; }
+        size_t received = 0;
+        uint8_t bytes[24];
+        error = storage_read_scene(selected->id, selected->checksum, 0, 24, bytes, &received);
+        if (error == ERR_NONE && received == 24) {
+            wire_put32(reply, 24 + wire_u32(bytes + 12)); reply_size = 4;
+        }
+        break;
+    }
+    case CMD_BENCH_ACTIVE:
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        error = diagnostics_active(reply, &reply_size);
+        playlist_pause(now_ms());
+        break;
     case CMD_SET_PLAYLIST:
     case CMD_SET_PLAYLIST_EFFECT: {
         Playlist next;
@@ -285,16 +324,24 @@ void usb_service_poll(bool *fallback_mode)
 {
     if (!installed) return;
     uint8_t input[64];
-    const int count = usb_serial_jtag_read_bytes(input, sizeof(input), 0);
-    for (int i = 0; i < count; ++i) {
-        ProtocolFrame frame;
-        ProtocolError error;
-        uint16_t sequence;
-        uint8_t command;
-        const ParseResult result = protocol_feed(&parser, input[i], &frame,
-                                                  &error, &sequence, &command);
-        if (result == PARSE_FRAME) handle_request(&frame, fallback_mode);
-        else if (result == PARSE_ERROR)
-            send_response(sequence, command, error, NULL, 0);
+    // Drain an already queued upload frame in this tick instead of waiting
+    // 20 ms after each 64 bytes. Bound work so continuous RX cannot starve LCD.
+    size_t budget = 1024;
+    while (budget) {
+        const size_t capacity = budget < sizeof(input) ? budget : sizeof(input);
+        const int count = usb_serial_jtag_read_bytes(input, capacity, 0);
+        if (count <= 0) break;
+        budget -= (size_t)count;
+        for (int i = 0; i < count; ++i) {
+            ProtocolFrame frame;
+            ProtocolError error;
+            uint16_t sequence;
+            uint8_t command;
+            const ParseResult result = protocol_feed(&parser, input[i], &frame,
+                                                      &error, &sequence, &command);
+            if (result == PARSE_FRAME) handle_request(&frame, fallback_mode);
+            else if (result == PARSE_ERROR)
+                send_response(sequence, command, error, NULL, 0);
+        }
     }
 }
