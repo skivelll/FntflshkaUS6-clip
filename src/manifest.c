@@ -6,6 +6,56 @@
 #include "asset_format.h"
 #include "manifest.h"
 
+bool manifest_title_valid(const uint8_t *bytes, size_t length)
+{
+    if (!bytes || length > MANIFEST_TITLE_MAX) return false;
+    for (size_t i = 0; i < length;) {
+        uint32_t cp = bytes[i++];
+        unsigned extra = 0;
+        uint32_t minimum = 0;
+        if (cp >= 0xC2 && cp <= 0xDF) { extra = 1; cp &= 0x1F; minimum = 0x80; }
+        else if (cp >= 0xE0 && cp <= 0xEF) { extra = 2; cp &= 0x0F; minimum = 0x800; }
+        else if (cp >= 0xF0 && cp <= 0xF4) { extra = 3; cp &= 7; minimum = 0x10000; }
+        else if (cp >= 0x80) return false;
+        if (i + extra > length) return false;
+        for (unsigned n = 0; n < extra; ++n) {
+            if ((bytes[i] & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (bytes[i++] & 63);
+        }
+        if (cp < minimum || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) || cp < 32 || cp == 127)
+            return false;
+    }
+    return true;
+}
+
+bool manifest_rename(Manifest *manifest, uint32_t id, const uint8_t *title, size_t length)
+{
+    if (!manifest_title_valid(title, length)) return false;
+    for (size_t i = 0; i < manifest->count; ++i) {
+        if (manifest->scenes[i].id == id) {
+            memcpy(manifest->scenes[i].title, title, length);
+            manifest->scenes[i].title[length] = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool manifest_reorder(Manifest *manifest, const uint32_t *ids, size_t count)
+{
+    if (count != manifest->count || !ids) return false;
+    Manifest next = *manifest;
+    for (size_t i = 0; i < count; ++i) {
+        const ManifestScene *scene = manifest_find(manifest, ids[i]);
+        if (!scene) return false;
+        for (size_t j = 0; j < i; ++j) if (ids[j] == ids[i]) return false;
+        next.scenes[i] = *scene;
+        next.scenes[i].order = (uint32_t)i;
+    }
+    *manifest = next;
+    return true;
+}
+
 static bool json_uint(const cJSON *object, const char *key, uint32_t max,
                       uint32_t *out)
 {
@@ -115,6 +165,14 @@ bool manifest_parse(const char *json, size_t length, Manifest *out)
             scene.width = (uint16_t)width;
             scene.height = (uint16_t)height;
             strcpy(scene.filename, name->valuestring);
+            const cJSON *title = cJSON_GetObjectItemCaseSensitive(item, "title");
+            if (title) {
+                if (!cJSON_IsString(title) || !manifest_title_valid((const uint8_t *)title->valuestring, strlen(title->valuestring))) {
+                    ok = false;
+                    break;
+                }
+                strcpy(scene.title, title->valuestring);
+            }
             ok = manifest_find(&parsed, scene.id) == NULL && manifest_upsert(&parsed, &scene);
         }
     }
@@ -133,11 +191,17 @@ size_t manifest_encode(const Manifest *manifest, char *out, size_t capacity)
     size_t used = (size_t)n;
     for (size_t i = 0; i < manifest->count; ++i) {
         const ManifestScene *s = &manifest->scenes[i];
+        cJSON *title_value = cJSON_CreateString(s->title);
+        if (!title_value) return 0;
+        char *title_json = cJSON_PrintUnformatted(title_value);
+        cJSON_Delete(title_value);
+        if (!title_json) return 0;
         n = snprintf(out + used, capacity - used,
-                     "%s{\"id\":%u,\"file\":\"%s\",\"order\":%u,\"type\":%u,\"width\":%u,\"height\":%u,\"checksum\":%u}",
+                     "%s{\"id\":%u,\"file\":\"%s\",\"order\":%u,\"type\":%u,\"width\":%u,\"height\":%u,\"checksum\":%u,\"title\":%s}",
                      i ? "," : "", (unsigned)s->id, s->filename,
                      (unsigned)s->order, s->type, s->width, s->height,
-                     (unsigned)s->checksum);
+                     (unsigned)s->checksum, title_json);
+        cJSON_free(title_json);
         if (n < 0 || (size_t)n >= capacity - used) return 0;
         used += (size_t)n;
     }

@@ -20,6 +20,10 @@ typedef enum {
     CMD_DELETE_SCENE = 8,
     CMD_SET_ACTIVE_SCENE = 9,
     CMD_PING = 10,
+    CMD_READ_SCENE = 11,
+    CMD_GET_SCENE_DETAILS = 12,
+    CMD_RENAME_SCENE = 13,
+    CMD_REORDER_SCENES = 14,
     CMD_ACK = 0x80,
     CMD_NACK = 0x81,
 } ProtocolCommand;

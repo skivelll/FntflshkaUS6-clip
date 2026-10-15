@@ -96,6 +96,23 @@ static void test_manifest(void)
     assert(!manifest_parse(json, length, &parsed));
     assert(!manifest_parse("{", 1, &parsed));
     assert(manifest_delete(&m, 1) && m.active == 0 && m.count == 1);
+    const uint8_t title[] = {0xD0, 0xA2, '"', '\\', 'x'};
+    assert(manifest_rename(&parsed, 1, title, sizeof(title)));
+    const size_t titled_length = manifest_encode(&parsed, json, sizeof(json));
+    Manifest titled;
+    assert(titled_length && manifest_parse(json, titled_length, &titled));
+    assert(memcmp(titled.scenes[0].title, title, sizeof(title)) == 0);
+    const uint8_t invalid_utf8[] = {0xC0, 0xAF};
+    assert(!manifest_title_valid(invalid_utf8, sizeof(invalid_utf8)));
+    assert(!manifest_title_valid((const uint8_t *)"bad\nname", 8));
+    const uint32_t order[] = {2, 1};
+    assert(manifest_reorder(&titled, order, 2));
+    assert(titled.scenes[0].id == 2 && titled.scenes[1].id == 1 && titled.active == 1);
+    const uint32_t duplicate[] = {1, 1};
+    assert(!manifest_reorder(&titled, duplicate, 2));
+    const char legacy[] = "{\"version\":1,\"active\":1,\"scenes\":[{\"id\":1,\"file\":\"scenes/0001a.bin\",\"order\":0,\"type\":1,\"width\":2,\"height\":1,\"checksum\":42}]}";
+    assert(manifest_parse(legacy, sizeof(legacy) - 1, &titled));
+    assert(titled.scenes[0].title[0] == 0);
 }
 
 static void test_interrupted_upload(void)

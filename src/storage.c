@@ -191,6 +191,13 @@ ProtocolError storage_upload_end(void)
     snprintf(scene.filename, sizeof(scene.filename), "scenes/%04u%c.bin", (unsigned)id, slot);
     Manifest next = manifest;
     if (!manifest_upsert(&next, &scene)) { unlink(UPLOAD_TEMP); return ERR_NO_SPACE; }
+    if (old) {
+        const size_t length = strlen(old->title);
+        if (!manifest_rename(&next, id, (const uint8_t *)old->title, length)) {
+            unlink(UPLOAD_TEMP);
+            return ERR_WRITE;
+        }
+    }
     next.active = id;
     char final_path[48];
     snprintf(final_path, sizeof(final_path), STORAGE_ROOT "/%s", scene.filename);
@@ -235,6 +242,59 @@ static FILE *open_verified_scene(const ManifestScene *selected)
                        fseek(file, ASSET_HEADER_SIZE, SEEK_SET) == 0;
     if (!valid) { fclose(file); return NULL; }
     return file;
+}
+
+ProtocolError storage_read_scene(uint32_t id, uint32_t checksum, uint32_t offset,
+                                 size_t length, uint8_t *out, size_t *received)
+{
+    if (!mounted) return ERR_STORAGE;
+    if (upload.file) return ERR_BAD_STATE;
+    if (!out || !received || !length || length > PROTOCOL_MAX_CHUNK) return ERR_BAD_LENGTH;
+    const ManifestScene *selected = manifest_find(&manifest, id);
+    if (!selected) return ERR_NOT_FOUND;
+    if (selected->checksum != checksum) return ERR_BAD_STATE;
+    const uint32_t size = ASSET_HEADER_SIZE + (uint32_t)selected->width * selected->height * 2U;
+    if (offset >= size) return ERR_BAD_LENGTH;
+    char path[48];
+    snprintf(path, sizeof(path), STORAGE_ROOT "/%s", selected->filename);
+    // Validate once at the start; host validates the complete returned asset CRC.
+    FILE *file = offset == 0 ? open_verified_scene(selected) : fopen(path, "rb");
+    if (!file) return ERR_INVALID_ASSET;
+    struct stat info;
+    const size_t count = length < size - offset ? length : size - offset;
+    const bool valid = fstat(fileno(file), &info) == 0 && info.st_size == size &&
+                       fseek(file, (long)offset, SEEK_SET) == 0 &&
+                       fread(out, 1, count, file) == count;
+    fclose(file);
+    if (!valid) return ERR_INVALID_ASSET;
+    *received = count;
+    return ERR_NONE;
+}
+
+ProtocolError storage_rename(uint32_t id, uint32_t checksum, const uint8_t *title, size_t length)
+{
+    if (!mounted) return ERR_STORAGE;
+    if (upload.file) return ERR_BAD_STATE;
+    const ManifestScene *scene = manifest_find(&manifest, id);
+    if (!scene) return ERR_NOT_FOUND;
+    if (scene->checksum != checksum) return ERR_BAD_STATE;
+    Manifest next = manifest;
+    if (!manifest_rename(&next, id, title, length)) return ERR_BAD_LENGTH;
+    return save_manifest(&next) ? ERR_NONE : ERR_WRITE;
+}
+
+ProtocolError storage_reorder(const uint32_t *ids, const uint32_t *checksums, size_t count)
+{
+    if (!mounted) return ERR_STORAGE;
+    if (upload.file) return ERR_BAD_STATE;
+    if (count != manifest.count) return ERR_BAD_STATE;
+    for (size_t i = 0; i < count; ++i) {
+        const ManifestScene *scene = manifest_find(&manifest, ids[i]);
+        if (!scene || scene->checksum != checksums[i]) return ERR_BAD_STATE;
+    }
+    Manifest next = manifest;
+    if (!manifest_reorder(&next, ids, count)) return ERR_BAD_LENGTH;
+    return save_manifest(&next) ? ERR_NONE : ERR_WRITE;
 }
 
 ProtocolError storage_activate(uint32_t id)

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fntflshka-us6-clip"
+version = "0.1.0"
+description = "Native desktop controller for FntflshkaUS6 clip"
+requires-python = ">=3.12,<3.14"
+dependencies = ["PySide6==6.10.3", "Pillow==12.3.0", "pyserial==3.5"]
+
+[project.gui-scripts]
+fntflshka-clip = "fntflshka_us6_clip.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fntflshka_us6_clip = ["resources/*.qss"]

@@ -1,5 +1,124 @@
 # FntflshkaUS6 clip firmware foundation
 
+## Desktop MVP (Windows)
+
+Нативный GUI **FntflshkaUS6 clip**: автоматическое подключение, PNG/JPG/WEBP,
+FIT/FILL, масштаб/позиция/фон, RGB565-preview, предзагрузка сцен в память,
+названия/порядок/замена картинок, включение/удаление сцен и загрузка без
+перепрошивки firmware. [Запуск, архитектура и ограничения](desktop/README.md).
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .\desktop
+.\.venv\Scripts\python.exe -m fntflshka_us6_clip
+```
+
+После установки запуск без терминала: `.venv\Scripts\fntflshka-clip.exe`.
+Firmware development setup ниже остаётся отдельным workflow.
+
+## Windows development (primary workflow)
+
+Use native Windows 10/11, Git for Windows and Python 3.12 or 3.13. Python
+3.14 is not validated for this ESP-IDF stack. VS Code and Arduino IDE are not
+required. Run these PowerShell commands from the repository root (choose an
+installed compatible Python with `py -0p`):
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m serial.tools.list_ports -v
+.\.venv\Scripts\python.exe tools/clipctl.py info
+.\.venv\Scripts\python.exe tools/clipctl.py list
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p 'test_*.py' -v
+.\.venv\Scripts\python.exe -m platformio run
+```
+
+PlatformIO uses its permanent default user directory. The pinned platform is
+espressif32 6.13.0 and the expected ESP-IDF version is 5.5.3. The initial build
+downloads the RISC-V toolchain, ESP-IDF, CMake and Ninja; a system C compiler
+is not needed for firmware builds. Keep `dependencies.lock` unchanged.
+
+First query the existing firmware before flashing. Discovery prioritizes
+Espressif USB Serial/JTAG `303a:1001`, then requires the project HELLO identity.
+The Windows COM number is assigned by the OS. Inspect it with list_ports;
+`--port COM5` is an example manual override, not a required port. CH340 is not
+used. Do not use WSL for physical ESP32 access.
+
+On the tested Windows machine, pressing hardware RESET preserves the image
+but can leave COM3 enumerated without protocol replies, even with the monitor
+closed. Unplug/reconnect USB restores communication. The verified alternative
+is an explicit esptool-style USB reset on the known board's port:
+
+```powershell
+# Replace COM5 with the port previously identified as this board:
+.\.venv\Scripts\python.exe tools/clipctl.py --port COM5 --reset info
+```
+
+This resets the board before the usual HELLO identity check; it does not
+reflash or erase content. Discovery never resets ports automatically. After
+recovery, normal automatic `info`, `list` and upload work again. Firmware
+and the vendor driver remain unchanged. The underlying cause of the Windows
+hardware-RESET USB behavior is not established; this is a verified workaround.
+
+Only after a successful build, inspect image size, the 4 MB configuration and
+the unchanged partition layout; then flash using the discovered port:
+
+```powershell
+git status --short
+# Set this to the port reported by clipctl info / list_ports:
+$clipPort = Read-Host 'ESP32 COM port'
+.\.venv\Scripts\python.exe -m platformio run -t upload --upload-port $clipPort
+.\.venv\Scripts\python.exe -m platformio device monitor -p $clipPort -b 115200
+```
+
+Close the monitor before clipctl. Verify boot, LittleFS mount, active manifest
+scene and absence of reset loops. Do not erase Flash or upload a filesystem
+image: normal firmware upload must preserve user content.
+
+```powershell
+.\.venv\Scripts\python.exe tools/make_asset.py input.png output.bin
+.\.venv\Scripts\python.exe tools/clipctl.py upload output.bin --id 2
+.\.venv\Scripts\python.exe tools/clipctl.py list
+.\.venv\Scripts\python.exe tools/clipctl.py info
+```
+
+Choose an unused scene ID (1–8) to preserve existing scenes. Verify the image
+on the LCD, press hardware RESET, then verify the same image and active scene
+again. Software ACK alone does not verify the physical display.
+
+## Linux development
+
+Use a compatible Python (3.13 was verified on Ubuntu) and a local environment:
+
+```sh
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python tools/clipctl.py info
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+.venv/bin/python -m platformio run
+```
+
+Use `--port /dev/ttyACM0` when needed; configure serial-device permissions
+according to the Linux distribution. Both platforms use the same Python tools,
+wire protocol, assets and firmware sources.
+
+## Native firmware host tests
+
+The existing C tests require a **native** C11 GCC/Clang compiler, separate from
+the ESP32 RISC-V toolchain. On Windows use native MinGW-w64 GCC or a compatible
+Clang toolchain; no WSL is needed. With the compiler on PATH and after the first
+firmware build:
+
+```powershell
+.\.venv\Scripts\python.exe tools/run_host_tests.py
+```
+
+On Linux use `.venv/bin/python tools/run_host_tests.py`. The runner uses
+`tempfile`, discovers cJSON from the permanent PlatformIO installation, and
+supports `--cc PATH` and `--cjson DIRECTORY`. It retains both foundation and
+modes tests. If no native compiler is installed, these tests cannot run;
+Python tests and the firmware build remain separate checks. No large IDE is
+required.
+
 ## User content over USB
 
 Firmware is configured for **4 MB Flash**. Its [partition layout](docs/storage_layout.md)
@@ -30,7 +149,7 @@ cannot be opened by both programs at once. The uploaded image is auto-activated
 and restored after reset. A/B filenames preserve the previous active file
 until the new upload and manifest commit succeed.
 
-Host tests:
+Historical Ubuntu host-test commands (prefer the portable runner above):
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -Isrc \
@@ -44,7 +163,8 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 The LittleFS component is pinned by `src/idf_component.yml` and
-`dependencies.lock`. On this machine, ESP-IDF's component cache needs a
+`dependencies.lock`. Historical Ubuntu-only workaround: on the old machine,
+ESP-IDF's component cache needed a
 writable temporary location; use `XDG_CACHE_HOME=/tmp/hairclip-cache` with
 the PlatformIO commands below. A fresh `/tmp` requires restoring the
 PlatformIO toolchain before rebuilding.
@@ -81,6 +201,10 @@ framebuffer. `draw_image()` выводит исходный размер, `draw_
 целочисленный масштаб. Оба метода обрезают область за пределами экрана.
 В serial log при запуске печатаются размеры и объём каждого asset в RGB565:
 256×128 занимает 65536 байт, 24×24 — 1152 байта.
+
+Следующий раздел — исторический workaround старой Ubuntu-машины, не текущий
+workflow. Не переносите каталоги `/tmp` на Windows; используйте постоянное
+окружение из разделов выше.
 
 На Ubuntu 26.04 системный Python 3.14 несовместим с одной из зависимостей
 ESP-IDF 5.5.3. Для этой сборки использован Python 3.13 в `/tmp/hairclip-python`,

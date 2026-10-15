@@ -16,7 +16,11 @@ the partition size due to filesystem metadata and wear-leveling; query
 LittleFS root: `manifest.json` and `scenes/`. Up to eight scene IDs are
 supported. Each ID uses A/B files (`0001a.bin`, `0001b.bin`, etc.). The manifest
 contains version, active ID and ordered records with ID, filename, order,
-type, dimensions and pixel CRC. It is written via `manifest.tmp` and rename.
+type, dimensions and pixel CRC. Firmware 1.2 also stores optional UTF-8 `title`
+(0–48 bytes); records without it default to an empty title. Manifest version is
+still 1, maximum parsed/encoded size is 4096 bytes (older firmware: 1536).
+It is written via `manifest.tmp` and rename. Rename/order changes use the same
+atomic commit and do not change asset files. Image replacement retains title/order.
 Old active files are retained until a later replacement or explicit deletion.
 
 The old partition table had a single 1 MiB factory app and no data partition

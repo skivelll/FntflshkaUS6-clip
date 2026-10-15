@@ -8,3 +8,6 @@ sdkconfig.*
 !sdkconfig.defaults
 managed_components/
 __pycache__/
+*.egg-info/
+desktop/build/
+desktop/dist/

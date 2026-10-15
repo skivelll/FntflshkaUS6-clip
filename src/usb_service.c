@@ -72,7 +72,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         const size_t name_length = sizeof(FIRMWARE_NAME) - 1;
         memcpy(reply, FIRMWARE_NAME, name_length);
         reply[name_length] = 1; // Firmware major
-        reply[name_length + 1] = 0; // Firmware minor
+        reply[name_length + 1] = 2; // Firmware minor: scene metadata extension
         reply_size = name_length + 2;
         break;
     }
@@ -85,6 +85,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         wire_put16(reply + 2, DISPLAY_WIDTH);
         wire_put16(reply + 4, DISPLAY_HEIGHT);
         reply[6] = ASSET_PIXEL_RGB565;
+        reply[7] = 3; // bit 0 = READ_SCENE; bit 1 = scene title/order metadata.
         wire_put32(reply + 8, 4U * 1024U * 1024U);
         wire_put32(reply + 12, 0); // Physical size is not reliably distinct from configured size.
         wire_put32(reply + 16, (uint32_t)total);
@@ -158,6 +159,41 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
             if (*fallback_mode) modes_init(now_ms());
         }
         break;
+    case CMD_READ_SCENE:
+        if (n != 14) { error = ERR_BAD_LENGTH; break; }
+        error = storage_read_scene(wire_u32(p), wire_u32(p + 4), wire_u32(p + 8),
+                                   wire_u16(p + 12), reply + 4, &reply_size);
+        if (error == ERR_NONE) {
+            wire_put32(reply, wire_u32(p + 8));
+            reply_size += 4;
+        }
+        break;
+    case CMD_GET_SCENE_DETAILS: {
+        if (n != 8) { error = ERR_BAD_LENGTH; break; }
+        const ManifestScene *scene = manifest_find(storage_manifest(), wire_u32(p));
+        if (!scene) { error = ERR_NOT_FOUND; break; }
+        if (scene->checksum != wire_u32(p + 4)) { error = ERR_BAD_STATE; break; }
+        const size_t length = strlen(scene->title);
+        reply[0] = (uint8_t)length;
+        memcpy(reply + 1, scene->title, length);
+        reply_size = length + 1;
+        break;
+    }
+    case CMD_RENAME_SCENE:
+        error = n >= 8 ? storage_rename(wire_u32(p), wire_u32(p + 4), p + 8, n - 8) : ERR_BAD_LENGTH;
+        break;
+    case CMD_REORDER_SCENES: {
+        if (n < 1 || p[0] > MANIFEST_MAX_SCENES || n != 1U + p[0] * 8U) {
+            error = ERR_BAD_LENGTH; break;
+        }
+        uint32_t ids[MANIFEST_MAX_SCENES], checksums[MANIFEST_MAX_SCENES];
+        for (size_t i = 0; i < p[0]; ++i) {
+            ids[i] = wire_u32(p + 1 + i * 8);
+            checksums[i] = wire_u32(p + 5 + i * 8);
+        }
+        error = storage_reorder(ids, checksums, p[0]);
+        break;
+    }
     case CMD_PING:
         if (n > sizeof(reply)) { error = ERR_BAD_LENGTH; break; }
         memcpy(reply, p, n);

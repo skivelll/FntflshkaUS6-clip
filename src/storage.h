@@ -17,4 +17,8 @@ ProtocolError storage_upload_chunk(uint32_t offset, const uint8_t *bytes, size_t
 ProtocolError storage_upload_end(void);
 ProtocolError storage_delete(uint32_t id);
 ProtocolError storage_activate(uint32_t id);
+ProtocolError storage_rename(uint32_t id, uint32_t checksum, const uint8_t *title, size_t length);
+ProtocolError storage_reorder(const uint32_t *ids, const uint32_t *checksums, size_t count);
 FILE *storage_open_active(ManifestScene *scene);
+ProtocolError storage_read_scene(uint32_t id, uint32_t checksum, uint32_t offset,
+                                 size_t length, uint8_t *out, size_t *received);

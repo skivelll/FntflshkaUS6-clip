@@ -5,7 +5,8 @@
 #include <stdint.h>
 
 #define MANIFEST_MAX_SCENES 8U
-#define MANIFEST_MAX_BYTES 1536U
+#define MANIFEST_MAX_BYTES 4096U
+#define MANIFEST_TITLE_MAX 48U
 
 typedef struct {
     uint32_t id;
@@ -15,6 +16,7 @@ typedef struct {
     uint16_t height;
     uint32_t checksum;
     char filename[24];
+    char title[MANIFEST_TITLE_MAX + 1];
 } ManifestScene;
 
 typedef struct {
@@ -29,3 +31,6 @@ const ManifestScene *manifest_find(const Manifest *manifest, uint32_t id);
 bool manifest_upsert(Manifest *manifest, const ManifestScene *scene);
 bool manifest_delete(Manifest *manifest, uint32_t id);
 void manifest_sort(Manifest *manifest);
+bool manifest_title_valid(const uint8_t *bytes, size_t length);
+bool manifest_rename(Manifest *manifest, uint32_t id, const uint8_t *title, size_t length);
+bool manifest_reorder(Manifest *manifest, const uint32_t *ids, size_t count);

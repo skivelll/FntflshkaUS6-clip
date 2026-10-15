@@ -38,13 +38,53 @@ magic, version, length, sequence and CRC. Other serial log text is ignored.
 | DELETE_SCENE | 8 | scene ID u32 | empty |
 | SET_ACTIVE_SCENE | 9 | scene ID u32 | empty |
 | PING | 10 | up to 519 bytes | identical bytes |
+| READ_SCENE (optional, firmware 1.1+) | 11 | scene ID u32, pixel CRC32 u32, file offset u32, requested length u16 (1–512) | echoed offset u32, up to requested length bytes from asset v1 |
+| GET_SCENE_DETAILS (optional, firmware 1.2+) | 12 | scene ID u32, pixel CRC32 u32 | title UTF-8 byte length u8, title bytes |
+| RENAME_SCENE (optional, firmware 1.2+) | 13 | scene ID u32, pixel CRC32 u32, title UTF-8 bytes (0–48) | empty |
+| REORDER_SCENES (optional, firmware 1.2+) | 14 | count u8, then complete ordered list of (ID u32, pixel CRC32 u32) | empty |
 
 Capabilities record: protocol version u8, asset version u8, display width u16,
-height u16, pixel format u8, reserved u8, configured Flash bytes u32,
+height u16, pixel format u8, capability flags u8 (formerly reserved), configured Flash bytes u32,
 physical Flash bytes u32 (0 if unavailable), LittleFS total bytes u32,
 LittleFS free bytes u32, maximum asset file bytes u32, maximum upload chunk
 u16, render buffer bytes u16. Applications must use LittleFS free space rather
 than physical Flash size to decide whether content fits.
+
+Capability flag bit 0 advertises READ_SCENE; bit 1 advertises scene metadata
+(GET_SCENE_DETAILS/RENAME_SCENE/REORDER_SCENES); other bits are reserved.
+Firmware 1.0 returns zero here and does not implement command 11. This is an
+additive protocol v1 extension: existing frames, commands, response sizes and
+asset format are unchanged. Old hosts may ignore flags. New hosts must check
+bit 0 before requesting READ_SCENE and show an unavailable preview on old firmware.
+
+READ_SCENE is read-only: it does not activate, modify or delete content. It reads
+the asset header and payload, not arbitrary paths. The request's checksum must
+match the current manifest record, otherwise BAD_STATE is returned. Reads during
+an upload are rejected with BAD_STATE. Missing ID returns NOT_FOUND; zero or
+oversized length and offset at/beyond EOF return BAD_LENGTH. The last response
+may be shorter at EOF. On offset zero firmware verifies the whole file. Hosts
+must verify echoed offsets, exact assembled size, header/payload CRC and manifest
+dimensions/checksum before showing pixels. The implementation uses the existing
+bounded response buffer, not a full-screen framebuffer or persistent read session.
+
+Scene metadata commands leave the original LIST_SCENES record layout unchanged.
+Hosts check flag bit 1 before querying or changing titles/order. Titles are valid
+UTF-8, at most 48 bytes, with no NUL, ASCII control characters or DEL. Empty title
+means a generated display name. JSON escaping is handled when saving; quotes,
+backslashes and non-ASCII text are supported. GET_SCENE_DETAILS is separate so
+old clients can continue to parse LIST_SCENES unchanged.
+
+REORDER_SCENES must include every current ID exactly once, with matching pixel
+CRC; stale/missing records return BAD_STATE and malformed permutations return
+BAD_LENGTH. It stores order only, not a slideshow. Rename/order are atomically
+committed via the existing manifest temporary-file/rename mechanism; reads and
+display remain unchanged. Replacing an image through the existing upload commands
+preserves its current title and order and still uses A/B files.
+
+Manifest version remains 1; optional `title` fields default to empty for old
+records. Firmware 1.2 allows manifests up to 4096 bytes. Downgrading to older
+firmware with a 1536-byte parser limit is not guaranteed if a named manifest
+exceeds that limit; old host CLI compatibility does not require firmware downgrade.
 
 Each scene record: ID u32, order u32, type u8, width u16, height u16,
 pixel-payload checksum u32, active u8, filename length u8, filename ASCII.
