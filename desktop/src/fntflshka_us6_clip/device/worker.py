@@ -3,27 +3,10 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from .client import DeviceClient
 from .discovery import Discovery
 from .mock import MockTransport
-from ..core.protocol import DeviceNack
 from .cache import SceneCache
+from .errors import user_error
 
 log = logging.getLogger(__name__)
-
-
-def user_error(error):
-    if isinstance(error, DeviceNack):
-        return {1: "Данные повредились при передаче. Попробуй ещё раз.",
-                4: "На заколке не хватает памяти.",
-                5: "Заколка отклонила файл. Подготовь изображение заново.",
-                9: "Предыдущая загрузка не завершена. Переподключи заколку по USB."}.get(
-                    error.code, "Заколка не смогла выполнить действие. Подробности в журнале.")
-    if isinstance(error, (OSError, TimeoutError)):
-        return "Связь с заколкой потеряна. Подключи её по USB-C."
-    if isinstance(error, (ValueError, InterruptedError)):
-        message = str(error)
-        if any("А" <= char <= "я" or char in "ёЁ" for char in message):
-            return message
-        return "Не удалось проверить данные сцены или устройства. Попробуй подключиться заново."
-    return "Что-то пошло не так. Подробности записаны в журнал."
 
 
 class DeviceWorker(QObject):
@@ -49,6 +32,7 @@ class DeviceWorker(QObject):
         self.last = None
         self.timer = None
         self.cache = SceneCache()
+        self.mock_transport = MockTransport() if mock else None
 
     def preload(self, snapshot):
         self.cache.synchronize(snapshot)
@@ -66,7 +50,7 @@ class DeviceWorker(QObject):
                                self.cache_progress.emit, self.cancelled)
         finally:
             self.cache_state.emit(False)
-        self.status.emit("● clip connected" + (" · ДЕМО" if self.mock else ""))
+        self.status.emit("● заколка подключена" + (" · ДЕМО" if self.mock else ""))
 
     def cancelled(self):
         return QThread.currentThread().isInterruptionRequested()
@@ -85,19 +69,21 @@ class DeviceWorker(QObject):
             return
         try:
             if self.client is None:
-                self.status.emit("● ищу clip...")
+                self.status.emit("● ищу заколку...")
                 if self.mock:
-                    self.client = DeviceClient(MockTransport())
+                    self.mock_transport.connected = True
+                    self.client = DeviceClient(self.mock_transport)
                     snapshot = self.client.snapshot()
                 else:
-                    result = self.discovery.find(self.cancelled)
+                    result = self.discovery.find(self.cancelled, self.status.emit)
                     if result is None:
                         self.cache_state.emit(False)
                         self.status.emit("● заколка не найдена")
                         self.snapshot_ready.emit(None)
+                        self.error.emit(self.discovery.last_error or "Заколка не найдена. Подключи её по USB-C.")
                         return
                     self.client, snapshot = result
-                self.status.emit("● clip connected" + (" · ДЕМО" if self.mock else ""))
+                self.status.emit("● заколка подключена" + (" · ДЕМО" if self.mock else ""))
             else:
                 snapshot = self.client.snapshot()
             self.last = snapshot
@@ -119,6 +105,18 @@ class DeviceWorker(QObject):
         self.cache_state.emit(False)
         self.snapshot_ready.emit(None)
         self.status.emit("● заколка не найдена")
+
+    @Slot()
+    def reconnect(self):
+        """Queued on the serial thread; never retries an interrupted upload."""
+        if self.cancelled():
+            return
+        if self.timer:
+            self.timer.stop()
+        self.disconnect()
+        self.poll()
+        if self.timer and not self.cancelled():
+            self.timer.start()
 
     @Slot(bytes)
     def upload(self, data):
@@ -156,7 +154,7 @@ class DeviceWorker(QObject):
         except Exception as error:
             log.exception("Upload failed; no automatic upload retry")
             self.disconnect()
-            self.error.emit(user_error(error))
+            self.error.emit(user_error(error) + " Загрузка не подтверждена. После подключения проверь список сцен; автоматического повтора нет.")
             self.upload_failed.emit()
         finally:
             self.timer.start()

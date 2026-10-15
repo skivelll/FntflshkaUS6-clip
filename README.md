@@ -13,6 +13,8 @@ FIT/FILL, масштаб/позиция/фон, RGB565-preview, предзагр
 ```
 
 После установки запуск без терминала: `.venv\Scripts\fntflshka-clip.exe`.
+Для запуска без установленного Python есть переносимая Windows x64 сборка
+с `FntflshkaUS6 clip.exe`; [сборка ZIP и проверка](docs/desktop_release.md).
 Firmware development setup ниже остаётся отдельным workflow.
 
 ## Windows development (primary workflow)

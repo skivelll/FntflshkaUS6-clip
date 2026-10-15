@@ -1,4 +1,4 @@
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QSignalBlocker
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QSlider, QSpinBox, QCheckBox, QPushButton, QColorDialog
 from PySide6.QtCore import Qt
@@ -69,3 +69,26 @@ class PlacementControls(QWidget):
     def placement(self):
         return Placement(*self.target, self.mode.currentData(), self.scale.value(),
                          self.x.value(), self.y.value(), self.pixel_art.isChecked(), self.background)
+
+    def preferences(self):
+        placement = self.placement()
+        return {key: getattr(placement, key) for key in ("mode", "scale", "x", "y", "pixel_art", "background")}
+
+    def restore_preferences(self, data):
+        if not isinstance(data, dict):
+            return
+        blockers = [QSignalBlocker(widget) for widget in (self.mode, self.scale, self.x, self.y, self.pixel_art)]
+        if data.get("mode") in ("fit", "fill"):
+            self.mode.setCurrentIndex(self.mode.findData(data["mode"]))
+        for key, widget in (("scale", self.scale), ("x", self.x), ("y", self.y)):
+            value = data.get(key)
+            if type(value) is int and widget.minimum() <= value <= widget.maximum():
+                widget.setValue(value)
+        if type(data.get("pixel_art")) is bool:
+            self.pixel_art.setChecked(data["pixel_art"])
+        background = data.get("background")
+        if isinstance(background, str) and QColor(background).isValid():
+            self.background = QColor(background).name()
+        self.background_button.setText("■ " + self.background)
+        self.scale_label.setText(f"Масштаб · {self.scale.value()}%")
+        del blockers

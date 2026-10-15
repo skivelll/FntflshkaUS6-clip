@@ -2,8 +2,8 @@ from pathlib import Path
 import logging
 from threading import Event
 from PIL import Image
-from PySide6.QtCore import QThread, QTimer, Signal, Slot, Qt, QSize
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QThread, QTimer, Signal, Slot, Qt, QSize, QUrl
+from PySide6.QtGui import QIcon, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QListWidget, QListWidgetItem, QFileDialog, QProgressBar, QMessageBox,
                              QToolButton, QPlainTextEdit, QScrollArea, QFrame, QInputDialog)
@@ -22,14 +22,19 @@ class MainWindow(QMainWindow):
     request_scene_action = Signal(object)
     request_preview = Signal(object)
     request_replace = Signal(object)
+    request_reconnect = Signal()
 
-    def __init__(self, mock=False, log_folder=Path("."), start_workers=True):
+    def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None):
         super().__init__()
         self.setWindowTitle("FntflshkaUS6 clip" + (" · ДЕМО" if mock else ""))
         self.resize(1180, 800)
         self.setMinimumSize(980, 650)
         self.setAcceptDrops(True)
         self.log_folder = log_folder
+        self.preferences = preferences
+        self.image_folder = ""
+        self.connection_message = None
+        self.operation_error = None
         self.source_path = None
         self.prepared = None
         self.busy = False
@@ -56,6 +61,10 @@ class MainWindow(QMainWindow):
         self.status = QLabel("● демо-устройство" if mock else "● заколка не найдена")
         self.status.setObjectName("status")
         header.addWidget(self.status)
+        self.reconnect_button = QPushButton("Переподключить")
+        self.reconnect_button.setToolTip("Повторно найти заколку. Незавершённая загрузка не повторяется.")
+        self.reconnect_button.clicked.connect(self.reconnect_device)
+        header.addWidget(self.reconnect_button)
         layout.addLayout(header)
         self.cache_label = QLabel()
         self.cache_bar = QProgressBar()
@@ -141,6 +150,11 @@ class MainWindow(QMainWindow):
         self.details.hide()
         details_toggle.toggled.connect(self.details.setVisible)
         layout.addWidget(details_toggle)
+        self.logs_button = QPushButton("Открыть папку журнала")
+        self.logs_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.log_folder.resolve()))))
+        self.logs_button.hide()
+        details_toggle.toggled.connect(self.logs_button.setVisible)
+        layout.addWidget(self.logs_button)
         layout.addWidget(self.details)
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
@@ -148,6 +162,8 @@ class MainWindow(QMainWindow):
         self.debounce.timeout.connect(self.dispatch_render)
         self.controls.changed.connect(self.schedule_render)
         self.snapshot = None
+        if self.preferences:
+            self.preferences.restore(self)
         self.update_scene_actions()
         self.device_thread = None
         if start_workers:
@@ -160,7 +176,7 @@ class MainWindow(QMainWindow):
             self.device_thread.finished.connect(self.device_worker.stop)
             self.device_worker.status.connect(self.status.setText)
             self.device_worker.snapshot_ready.connect(self.on_snapshot)
-            self.device_worker.error.connect(self.message.setText)
+            self.device_worker.error.connect(self.on_device_error)
             self.device_worker.progress.connect(self.on_progress)
             self.device_worker.upload_done.connect(self.on_uploaded)
             self.device_worker.upload_failed.connect(self.on_upload_failed)
@@ -173,6 +189,7 @@ class MainWindow(QMainWindow):
             self.device_worker.preview_progress.connect(self.on_preview_progress)
             self.request_upload.connect(self.device_worker.upload)
             self.request_replace.connect(self.device_worker.replace_image)
+            self.request_reconnect.connect(self.device_worker.reconnect)
             self.device_worker.cache_state.connect(self.on_cache_state)
             self.device_worker.cache_progress.connect(self.on_cache_progress)
             self.cache_label.setText("Подключаюсь и загружаю сцены...")
@@ -203,10 +220,11 @@ class MainWindow(QMainWindow):
                 self.cache_device = identity
             valid = {(snapshot.port, s.id, s.checksum, s.width, s.height) for s in snapshot.scenes}
             self.scene_previews = {k: v for k, v in self.scene_previews.items() if k in valid}
-        if snapshot and self.message.text() in (
+        if snapshot and (self.message.text() == self.connection_message or self.message.text() in (
                 "Заколка не найдена. Подключи её по USB-C.",
-                "Связь с заколкой потеряна. Подключи её по USB-C."):
+                "Связь с заколкой потеряна. Подключи её по USB-C.")):
             self.message.setText("Заколка подключена. Добавь картинку :3")
+            self.connection_message = None
         scroll = self.scenes.verticalScrollBar().value()
         self.scenes.blockSignals(True)
         self.scenes.clear()
@@ -245,7 +263,7 @@ class MainWindow(QMainWindow):
         self.update_memory()
 
     def choose_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Добавить картинку", "", "Картинки (*.png *.jpg *.jpeg *.webp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Добавить картинку", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp)")
         if path:
             self.import_image(Path(path))
 
@@ -258,6 +276,7 @@ class MainWindow(QMainWindow):
         return next((s for s in self.snapshot.scenes if s.id == scene_id), None) if self.snapshot else None
 
     def update_scene_actions(self, *args):
+        self.reconnect_button.setEnabled(not self.busy and not self.closing and not self.cache_loading)
         scene = self.selected_scene()
         available = scene is not None and not self.busy and not self.closing and not self.cache_loading
         self.activate_button.setEnabled(available and not scene.active if scene else False)
@@ -336,11 +355,27 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_cache_state(self, loading):
         self.cache_loading = loading
+        if loading:
+            self.cache_bar.setValue(0)
         self.cache_label.setVisible(loading)
         self.cache_bar.setVisible(loading)
         self.scenes.setEnabled(not loading and not self.busy)
         self.add_button.setEnabled(not loading and not self.busy)
         self.update_scene_actions()
+
+    @Slot(str)
+    def on_device_error(self, message):
+        if self.busy:
+            self.operation_error = message
+        self.connection_message = None if self.operation_error else message
+        self.message.setText(self.operation_error + "\n" + message if self.operation_error and self.operation_error != message else message)
+
+    def reconnect_device(self):
+        if self.busy or self.cache_loading or self.closing:
+            return
+        self.cache_label.setText("Переподключаю заколку...")
+        self.on_cache_state(True)
+        self.request_reconnect.emit()
 
     @Slot(int, int, int, int)
     def on_cache_progress(self, completed, count, done, total):
@@ -373,7 +408,7 @@ class MainWindow(QMainWindow):
         if not scene or self.busy or self.cache_loading:
             return
         target = (scene.id, scene.checksum, self.snapshot.port)
-        path, _ = QFileDialog.getOpenFileName(self, f"Новая картинка для «{scene.label}»", "", "Картинки (*.png *.jpg *.jpeg *.webp)")
+        path, _ = QFileDialog.getOpenFileName(self, f"Новая картинка для «{scene.label}»", self.image_folder, "Картинки (*.png *.jpg *.jpeg *.webp)")
         if path:
             self.import_image(Path(path), replacement=target)
 
@@ -414,6 +449,7 @@ class MainWindow(QMainWindow):
         if self.busy or self.closing or self.cache_loading or not self.snapshot:
             return
         self.operation_context = (action, scene.id)
+        self.operation_error = None
         self.preview_cancel.set()
         if self.preview_key not in self.scene_previews:
             self.preview_key = None
@@ -423,7 +459,8 @@ class MainWindow(QMainWindow):
         self.scenes.setEnabled(False)
         self.update_scene_actions()
         self.update_memory()
-        self.message.setText("Включаю сцену..." if action == "activate" else "Удаляю сцену...")
+        self.message.setText({"activate": "Включаю сцену...", "delete": "Удаляю сцену...",
+                              "rename": "Сохраняю название...", "reorder": "Сохраняю порядок..."}[action])
         request = (action, scene.id, scene.checksum, self.snapshot.port)
         self.request_scene_action.emit(request + (extra,) if extra is not None else request)
 
@@ -455,7 +492,9 @@ class MainWindow(QMainWindow):
         if self.busy or self.cache_loading:
             return
         self.replace_target = replacement
+        self.operation_error = None
         self.source_path = Path(path)
+        self.image_folder = str(self.source_path.resolve().parent)
         self.scenes.clearSelection()
         self.scenes.setCurrentRow(-1)
         self.update_scene_actions()
@@ -531,6 +570,7 @@ class MainWindow(QMainWindow):
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
+        self.operation_error = None
         self.busy = True
         self.scenes.setEnabled(False)
         self.update_scene_actions()
@@ -572,13 +612,13 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event):
         urls = event.mimeData().urls()
-        if not self.busy and len(urls) == 1 and urls[0].isLocalFile():
+        if not self.busy and not self.cache_loading and not self.closing and len(urls) == 1 and urls[0].isLocalFile():
             if Path(urls[0].toLocalFile()).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
                 event.acceptProposedAction()
 
     def dropEvent(self, event):
         urls = event.mimeData().urls()
-        if not self.busy and len(urls) == 1 and urls[0].isLocalFile():
+        if not self.busy and not self.cache_loading and not self.closing and len(urls) == 1 and urls[0].isLocalFile():
             self.import_image(Path(urls[0].toLocalFile()))
             event.acceptProposedAction()
 
@@ -595,4 +635,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(100, self.close)
         else:
+            if self.preferences:
+                self.preferences.save(self)
             event.accept()
