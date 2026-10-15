@@ -25,8 +25,10 @@ class MainWindow(QMainWindow):
     request_preview = Signal(object)
     request_replace = Signal(object)
     request_reconnect = Signal()
+    request_collection = Signal(object)
+    request_restore = Signal(object)
 
-    def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None):
+    def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None, library_folder=None):
         super().__init__()
         self.setWindowTitle("FntflshkaUS6 clip" + (" · ДЕМО" if mock else ""))
         self.resize(1180, 800)
@@ -34,6 +36,9 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.log_folder = log_folder
         self.preferences = preferences
+        self.library_folder = Path(library_folder) if library_folder is not None else Path(log_folder).parent / "library"
+        self.library_dialog = None
+        self.library_operation = None
         self.image_folder = ""
         self.connection_message = None
         self.operation_error = None
@@ -66,6 +71,9 @@ class MainWindow(QMainWindow):
         brand = QLabel("FntflshkaUS6 clip ✦")
         brand.setObjectName("brand")
         header.addWidget(brand)
+        self.library_button = QPushButton("Библиотека…")
+        self.library_button.clicked.connect(self.open_library)
+        header.addWidget(self.library_button)
         header.addStretch()
         self.status = QLabel("● демо-устройство" if mock else "● заколка не найдена")
         self.status.setObjectName("status")
@@ -214,6 +222,12 @@ class MainWindow(QMainWindow):
             self.request_upload.connect(self.device_worker.upload)
             self.request_replace.connect(self.device_worker.replace_image)
             self.request_reconnect.connect(self.device_worker.reconnect)
+            self.request_collection.connect(self.device_worker.export_collection)
+            self.request_restore.connect(self.device_worker.restore_collection)
+            self.device_worker.collection_ready.connect(self.on_collection_ready)
+            self.device_worker.collection_failed.connect(self.on_collection_failed)
+            self.device_worker.restore_done.connect(self.on_collection_restored)
+            self.device_worker.restore_failed.connect(self.on_collection_failed)
             self.device_worker.cache_state.connect(self.on_cache_state)
             self.device_worker.cache_progress.connect(self.on_cache_progress)
             self.cache_label.setText("Подключаюсь и загружаю сцены...")
@@ -313,6 +327,7 @@ class MainWindow(QMainWindow):
         return next((s for s in self.snapshot.scenes if s.id == scene_id), None) if self.snapshot else None
 
     def update_scene_actions(self, *args):
+        self.library_button.setEnabled(not self.busy and not self.closing)
         self.reconnect_button.setEnabled(not self.busy and not self.closing and not self.cache_loading)
         scene = self.selected_scene()
         available = scene is not None and not self.busy and not self.closing and not self.cache_loading
@@ -337,6 +352,62 @@ class MainWindow(QMainWindow):
         self.controls.setEnabled(scene is None and not self.busy and not self.cache_loading)
         self.update_selected_preview(scene)
         self.update_memory()
+        if self.library_dialog is not None:
+            self.library_dialog.update_actions()
+
+    def open_library(self):
+        if self.library_dialog is None:
+            from .library_dialog import LibraryDialog
+            dialog = LibraryDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            self.library_dialog = dialog
+            dialog.destroyed.connect(lambda *_: setattr(self, "library_dialog", None) if self.library_dialog is dialog else None)
+        self.library_dialog.show()
+        self.library_dialog.raise_()
+
+    def export_to_library(self, title, selected_id):
+        if self.busy or self.cache_loading or self.snapshot is None or self.device_thread is None:
+            self.library_dialog.operation_failed("Заколка пока недоступна. Дождись подключения и загрузки кэша.")
+            return
+        self.library_operation = "export"
+        self.busy = True
+        self.add_button.setEnabled(False)
+        self.scenes.setEnabled(False)
+        self.update_scene_actions()
+        self.request_collection.emit((self.snapshot, title, selected_id))
+
+    def restore_from_library(self, plan, cancel):
+        if self.busy or self.cache_loading or self.snapshot is None or self.device_thread is None:
+            self.library_dialog.operation_failed("Заколка пока недоступна. Создай план после подключения.")
+            return
+        self.library_operation = "restore"
+        self.busy = True
+        self.add_button.setEnabled(False)
+        self.scenes.setEnabled(False)
+        self.update_scene_actions()
+        self.request_restore.emit((plan, self.library_folder, cancel))
+
+    @Slot(object)
+    def on_collection_ready(self, collection):
+        self.library_operation = None
+        self.finish_scene_action()
+        if self.library_dialog is not None:
+            self.library_dialog.receive_collection(collection)
+
+    @Slot(str)
+    def on_collection_failed(self, message):
+        self.library_operation = None
+        self.finish_scene_action()
+        if self.library_dialog is not None:
+            self.library_dialog.operation_failed(message)
+
+    @Slot(object)
+    def on_collection_restored(self, snapshot):
+        self.library_operation = None
+        self.finish_scene_action()
+        self.message.setText("Коллекция восстановлена и проверена по плану.")
+        if self.library_dialog is not None:
+            self.library_dialog.restored(snapshot)
 
     def update_selected_preview(self, scene):
         key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height) if scene else None
@@ -731,6 +802,9 @@ class MainWindow(QMainWindow):
     def on_progress(self, done, total):
         self.progress.setValue(done * 100 // total)
         self.progress.setFormat(f"{done:,} / {total:,} байт")
+        if self.library_dialog is not None and self.library_operation == "restore":
+            self.library_dialog.progress.setValue(done * 100 // total)
+            self.library_dialog.progress.setFormat(f"{done:,} / {total:,} Б")
 
     @Slot(object)
     def on_uploaded(self, result):
@@ -781,6 +855,11 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def closeEvent(self, event):
+        if self.library_dialog is not None and self.library_dialog.isVisible():
+            self.library_dialog.close()
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
         self.closing = True
         self.preview_cancel.set()
         self.debounce.stop()

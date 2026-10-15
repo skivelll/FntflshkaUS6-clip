@@ -5,6 +5,10 @@ from .discovery import Discovery
 from .mock import MockTransport
 from .cache import SceneCache
 from .errors import user_error
+from ..library.archive import from_snapshot, save
+from ..library.restore import execute as execute_restore, RestoreFailure
+from pathlib import Path
+import uuid
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +27,10 @@ class DeviceWorker(QObject):
     preview_progress = Signal(object, int, int)
     cache_state = Signal(bool)
     cache_progress = Signal(int, int, int, int)
+    collection_ready = Signal(object)
+    collection_failed = Signal(str)
+    restore_done = Signal(object)
+    restore_failed = Signal(str)
 
     def __init__(self, mock=False):
         super().__init__()
@@ -216,6 +224,59 @@ class DeviceWorker(QObject):
             self.scene_failed.emit()
         finally:
             self.timer.start()
+
+    @Slot(object)
+    def export_collection(self, request):
+        baseline, title, selected_id = request
+        try:
+            if self.client is None or self.client.snapshot() != baseline:
+                raise ValueError("Список сцен или подключение изменились. Повтори экспорт.")
+            collection = from_snapshot(baseline, self.cache.assets, title, selected_id)
+            self.collection_ready.emit(collection)
+        except Exception as error:
+            log.exception("Collection export failed")
+            self.collection_failed.emit(user_error(error))
+
+    @Slot(object)
+    def restore_collection(self, request):
+        plan, folder, cancel = request
+        if self.timer:
+            self.timer.stop()
+        try:
+            if self.client is None or self.client.snapshot() != plan.baseline:
+                raise ValueError("Устройство или сцены изменились. Открой план заново.")
+            if plan.baseline.scenes:
+                backup = from_snapshot(plan.baseline, self.cache.assets, "Перед восстановлением")
+                try:
+                    save(Path(folder) / ("before-restore-" + uuid.uuid4().hex + ".fclip"), backup)
+                except OSError as error:
+                    raise ValueError("Не удалось сохранить локальную копию перед восстановлением. Проверь доступ к папке библиотеки и свободное место на компьютере. Запись на заколку не началась.") from error
+            def ready(snapshot, scene, data):
+                self.last = snapshot
+                self.cache.synchronize(snapshot)
+                key = self.cache.key(snapshot, scene)
+                self.cache.assets[key] = data
+                self.snapshot_ready.emit(snapshot)
+                self.preview_ready.emit(key, data)
+            self.status.emit("● восстанавливаю коллекцию...")
+            self.last = execute_restore(self.client, plan, ready, self.progress.emit,
+                                        lambda: cancel.is_set() or self.cancelled())
+            self.snapshot_ready.emit(self.last)
+            self.preload(self.last)
+            self.restore_done.emit(self.last)
+            self.status.emit("● коллекция восстановлена")
+        except Exception as error:
+            log.exception("Collection restore stopped; no automatic retry")
+            self.disconnect()
+            if isinstance(error, RestoreFailure):
+                message = user_error(error.error) + " " + str(error)
+            else:
+                message = user_error(error)
+            self.error.emit(message)
+            self.restore_failed.emit(message)
+        finally:
+            if self.timer and not self.cancelled():
+                self.timer.start()
 
     @Slot()
     def stop(self):

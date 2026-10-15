@@ -157,6 +157,41 @@ class SmokeCheck(QObject):
                 assert len(w.snapshot.scenes) == 1
                 assert w.snapshot.scenes[0].id == 2
                 self.results.append("delete_ack_refresh")
+                w.library_folder = Path(self.temp.name) / "library"
+                w.open_library()
+                self.step = 14
+            elif self.step == 14 and not w.library_dialog.io_busy:
+                w.library_dialog.title.setText("Smoke backup :3")
+                w.library_dialog.backup(None)
+                self.step = 15
+            elif self.step == 15 and not w.library_dialog.io_busy and not w.library_dialog.serial_busy and w.library_dialog.collection:
+                self.lib_collection = w.library_dialog.collection
+                self.lib_archive = Path(self.temp.name) / "копия.fclip"
+                w.library_dialog.file_job("export", (self.lib_collection, self.lib_archive))
+                self.step = 16
+            elif self.step == 16 and not w.library_dialog.io_busy and self.lib_archive.exists():
+                self.results.append("library_export_archive")
+                w.library_dialog.file_job("import", self.lib_archive)
+                self.step = 17
+            elif self.step == 17 and not w.library_dialog.io_busy and w.library_dialog.collection:
+                dialog = w.library_dialog
+                assert dialog.collections.count() == 2
+                before = w.snapshot
+                w.on_snapshot(None)
+                assert not dialog.preview.image.isNull() and not dialog.restore_button.isEnabled()
+                w.on_snapshot(before)
+                self.results.append("library_import_offline_preview")
+                self.report.parent.mkdir(parents=True, exist_ok=True)
+                dialog.grab().save(str(self.report.with_name(self.report.stem + "-library.png")))
+                from .library.restore import make_plan
+                dialog.begin_restore(make_plan(self.lib_collection, w.snapshot, ["add"]))
+                self.step = 18
+            elif self.step == 18 and not w.busy and not w.library_dialog.serial_busy and not w.library_dialog.io_busy:
+                assert len(w.snapshot.scenes) == 2
+                assert any(s.id == 1 and s.active for s in w.snapshot.scenes)
+                assert list(w.library_folder.glob("before-restore-*.fclip"))
+                assert self.reads == 0
+                self.results.append("library_restore_with_prebackup_no_reads")
                 self.finish()
         except Exception as error:
             log.exception("Bundled smoke failed")

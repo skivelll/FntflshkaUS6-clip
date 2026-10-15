@@ -20,6 +20,9 @@ Firmware development setup ниже остаётся отдельным workflow
 [Интерактивный редактор сцен и полоса памяти](docs/image_editor.md) ·
 [План следующих фаз](docs/roadmap.md).
 
+[Локальная библиотека, экспорт и восстановление коллекций](docs/library.md)
+доступны через кнопку «Библиотека…»; сохранённые коллекции просматриваются без USB.
+
 ## Windows development (primary workflow)
 
 Use native Windows 10/11, Git for Windows and Python 3.12 or 3.13. Python
