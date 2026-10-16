@@ -17,6 +17,7 @@ class ImageWorker(QObject):
     decoded = Signal(object, object)
     project_saved=Signal(str)
     project_loaded=Signal(str,object)
+    fill_ready=Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -68,13 +69,16 @@ class ImageWorker(QObject):
                     source = load_image(image_path)
                     self.source, self.path = source, cache_key
                     log.info("Image imported %s size=%s", path, source.size)
-            base_placement=replace(placement,text_layers=(),text_motion='static',text_speed=40,text_pause=0)
+            base_placement=replace(placement,text_layers=(),text_motion='static',text_speed=40,text_pause=0,paint_pixels=b'')
             base_key=(self.path,base_placement)
-            if placement.text_layers:
+            if placement.text_layers or placement.paint_pixels:
                 from .text import prepare_text
                 if self.text_base_key!=base_key:
                     self.text_base=prepare_image(self.source,base_placement);self.text_base_key=base_key
-                result=prepare_text(self.source,placement,base=self.text_base)
+                if placement.text_layers:result=prepare_text(self.source,placement,base=self.text_base)
+                else:
+                    from .drawing import prepare_paint
+                    result=prepare_paint(self.text_base,placement)
             else:
                 result=prepare_image(self.source,placement)
                 self.text_base,self.text_base_key=result,base_key
@@ -87,6 +91,14 @@ class ImageWorker(QObject):
                 'source_type':type(path).__name__,'generation':generation}))
             message = str(error) if isinstance(error, ValueError) else "Не удалось открыть картинку. Выбери другой файл."
             self.failed.emit(generation, message)
+
+    @Slot(object)
+    def fill(self,request):
+        from .drawing import flood
+        try:self.fill_ready.emit((request['key'],request['revision'],flood(request['pixels'],request['target'],request['point'],request['color'])))
+        except Exception as error:
+            log.exception('Drawing fill failed')
+            self.failure.emit(-3,problem(error,'image',context={'action':'paint_fill','revision':request['revision'],'key':request['key']}))
 
     @Slot(object)
     def project(self,request):

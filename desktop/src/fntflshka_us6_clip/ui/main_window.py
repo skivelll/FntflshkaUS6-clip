@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
     request_playlist = Signal(object)
     request_decode = Signal(object, bytes)
     request_project=Signal(object)
+    request_fill=Signal(object)
 
     def __init__(self, mock=False, log_folder=Path("."), start_workers=True, preferences=None, library_folder=None):
         super().__init__()
@@ -153,6 +154,17 @@ class MainWindow(QMainWindow):
         self.text_controls=TextControls()
         self.text_controls.changed.connect(self.on_text_changed)
         self.text_controls.blank.clicked.connect(self.new_text_scene)
+        from .drawing_controls import DrawingControls
+        self.draw_controls=DrawingControls()
+        self.draw_controls.changed.connect(self.on_drawing_changed)
+        self.draw_controls.view_changed.connect(self.reset_drawing_view)
+        self.draw_controls.grid_changed.connect(self.update_drawing_view)
+        self.preview.paint_zoom_changed.connect(self.on_paint_zoom)
+        self.draw_controls.fill_requested.connect(self.begin_fill)
+        self.draw_controls.clear_requested.connect(self.clear_drawing)
+        self.preview.paint_started.connect(self.begin_paint)
+        self.preview.paint_moved.connect(self.draw_controls.move)
+        self.preview.paint_finished.connect(self.draw_controls.finish)
         controls_scroll = QScrollArea()
         controls_scroll.setWidgetResizable(True)
         controls_scroll.setFrameShape(QFrame.NoFrame)
@@ -249,8 +261,8 @@ class MainWindow(QMainWindow):
             self.device_worker = DeviceWorker(mock)
             self.device_worker.moveToThread(self.device_thread)
             self.device_thread.started.connect(self.device_worker.start)
-            self.device_thread.finished.connect(self.device_worker.deleteLater)
             self.device_thread.finished.connect(self.device_worker.stop)
+            self.device_thread.finished.connect(self.device_worker.deleteLater)
             self.device_worker.status.connect(self.status.setText)
             self.device_worker.snapshot_ready.connect(self.on_snapshot)
             self.device_worker.error.connect(self.on_device_error)
@@ -295,6 +307,8 @@ class MainWindow(QMainWindow):
             self.request_project.connect(self.image_worker.project)
             self.image_worker.project_loaded.connect(self.on_project_loaded)
             self.image_worker.project_saved.connect(self.on_project_saved)
+            self.request_fill.connect(self.image_worker.fill)
+            self.image_worker.fill_ready.connect(self.on_fill_ready)
             self.image_thread.start()
 
     def arrange_workspace(self,layout,old_body,old_image_row,controls_scroll,details_toggle):
@@ -309,6 +323,8 @@ class MainWindow(QMainWindow):
         left.addWidget(self.scenes,1);left.addWidget(self.add_button)
         self.new_text_button=QPushButton('+ текстовая сцена')
         self.new_text_button.clicked.connect(self.new_text_scene);left.addWidget(self.new_text_button)
+        self.new_drawing_button=QPushButton('+ нарисовать')
+        self.new_drawing_button.clicked.connect(self.new_drawing_scene);left.addWidget(self.new_drawing_button)
         self.scene_panel.setMinimumWidth(220)
 
         self.editor_panel=QWidget();center=QVBoxLayout(self.editor_panel)
@@ -344,6 +360,10 @@ class MainWindow(QMainWindow):
         text_scroll=QScrollArea();text_scroll.setWidgetResizable(True);text_scroll.setFrameShape(QFrame.NoFrame)
         text_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);text_scroll.setWidget(self.text_controls)
         self.settings_tabs.addTab(text_scroll,'Текст и движение')
+        draw_scroll=QScrollArea();draw_scroll.setWidgetResizable(True);draw_scroll.setFrameShape(QFrame.NoFrame)
+        draw_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);draw_scroll.setWidget(self.draw_controls)
+        self.settings_tabs.addTab(draw_scroll,'Рисунок')
+        self.settings_tabs.currentChanged.connect(self.update_drawing_view)
         right.addWidget(self.settings_tabs,1)
         tools=QHBoxLayout();tools.addWidget(self.compare_button);tools.addWidget(self.gif_button)
         right.addLayout(tools)
@@ -405,6 +425,9 @@ class MainWindow(QMainWindow):
 
     @Slot(int,object)
     def on_media_problem(self,generation,value):
+        if generation==-3:
+            if value.context.get('key')!=self.source_revision:return
+            self.draw_controls.fill_busy=False;self.draw_controls.update_history();self.notifications.present(value);self.schedule_render();return
         if generation==-2:
             self.centralWidget().setEnabled(True)
             self.notifications.present(value)
@@ -759,6 +782,7 @@ class MainWindow(QMainWindow):
         self.source_path = None
         self.source_asset = SceneSource(data, self.controls.target)
         self.text_controls.set_document()
+        self.draw_controls.set_document(target=self.controls.target)
         self.source_revision += 1
         self.edit_scene_label = scene.label
         self.replace_target = (scene.id, scene.checksum, self.snapshot.port)
@@ -791,6 +815,7 @@ class MainWindow(QMainWindow):
         self.restore_editor_controls()
         self.text_controls.set_document()
         self.preview_key = None
+        self.draw_controls.set_document(target=self.controls.target)
         self.preview.clear_image()
         self.on_snapshot(self.snapshot)
         if self.snapshot:
@@ -800,11 +825,58 @@ class MainWindow(QMainWindow):
                     break
         self.message.setText("Изменения отменены. Сцена на заколке не менялась.")
 
+    def new_drawing_scene(self):
+        self.new_text_scene()
+        self.edit_scene_label='Новый рисунок';self.image_label.setText('Рисунок · новая сцена')
+        self.settings_tabs.setCurrentIndex(2)
+
+    def on_drawing_changed(self):
+        if self.image_source is not None:self.schedule_render()
+
+    def update_drawing_view(self,*_):
+        if self.closing:return
+        enabled=self.settings_tabs.currentIndex()==2 and self.draw_controls.isEnabled() and self.image_source is not None
+        previous=self.preview.drawing;self.preview.set_drawing(enabled,self.draw_controls.grid.isChecked())
+        if previous and not enabled:self.draw_controls.finish()
+        if enabled and not previous:self.reset_drawing_view()
+
+    def on_paint_zoom(self,zoom):
+        from PySide6.QtCore import QSignalBlocker
+        blocker=QSignalBlocker(self.draw_controls.zoom);self.draw_controls.zoom.setCurrentIndex(self.draw_controls.zoom.findData(zoom));del blocker
+
+    def reset_drawing_view(self):
+        from PySide6.QtCore import QPointF
+        self.preview.view_zoom=self.draw_controls.zoom.currentData() if self.preview.drawing else 1
+        self.preview.view_pan=QPointF();self.preview.grid=self.draw_controls.grid.isChecked();self.preview.update()
+
+    def begin_paint(self,x,y):
+        if not self.preview.drawing or self.draw_controls.fill_busy:return
+        if self.draw_controls.tool.currentData()=='pick':
+            if 0<=x<self.preview.image.width() and 0<=y<self.preview.image.height():self.draw_controls.set_color(self.preview.image.pixelColor(x,y).name())
+        else:self.draw_controls.start(x,y)
+
+    def clear_drawing(self):
+        if self.draw_controls.fill_busy:return
+        if QMessageBox.question(self,'Очистить рисунок?','Убрать только нарисованный слой? Картинка и текст останутся. Можно отменить через undo.',QMessageBox.Yes|QMessageBox.No,QMessageBox.No)==QMessageBox.Yes:self.draw_controls.clear()
+
+    def begin_fill(self,request):
+        self.generation+=1;self.prepared=None;self.update_memory()
+        self.message.setText('Заливаем область рисунка…')
+        self.request_fill.emit(dict(request,key=self.source_revision))
+
+    @Slot(object)
+    def on_fill_ready(self,result):
+        key,revision,pixels=result
+        if key!=self.source_revision or self.closing:return
+        if revision!=self.draw_controls.document.revision:
+            self.draw_controls.fill_busy=False;self.draw_controls.update_history();self.schedule_render();return
+        self.draw_controls.filled(revision,pixels)
+
     def render_placement(self):
         from dataclasses import replace
         return replace(self.controls.placement(),text_layers=self.text_controls.layers,
             text_motion=self.text_controls.motion.currentData(),text_speed=self.text_controls.speed.value(),
-            text_pause=self.text_controls.pause.value())
+            text_pause=self.text_controls.pause.value(),paint_pixels=self.draw_controls.document.pixels())
 
     def new_text_scene(self,*_,preserve_layers=False):
         if self.busy or self.cache_loading or self.closing:return
@@ -946,6 +1018,7 @@ class MainWindow(QMainWindow):
         self.restore_editor_controls()
         self.source_asset = None
         self.text_controls.set_document()
+        self.draw_controls.set_document(target=self.controls.target)
         self.notifications.recovered('image')
         self.replace_target = replacement
         self.replace_device_id = self.snapshot.device_id if replacement and self.snapshot else None
@@ -989,12 +1062,15 @@ class MainWindow(QMainWindow):
         from dataclasses import asdict
         self.centralWidget().setEnabled(True)
         if self.closing:return
+        if placement.paint_pixels and (placement.width,placement.height)!=self.controls.target:
+            self.notify_error(ValueError('Размер рисунка в проекте не совпадает с экраном устройства.'),'image');return
         self.restore_editor_controls()
         self.source_asset=None;self.source_path=Path(path)
         self.replace_target=None;self.replace_device_id=None
         self.source_revision+=1
         self.controls.restore_preferences(asdict(placement))
         self.text_controls.set_document(placement.text_layers,placement.text_motion,placement.text_speed,placement.text_pause)
+        self.draw_controls.set_document(placement.paint_pixels,(placement.width,placement.height))
         self.scenes.clearSelection();self.scenes.setCurrentRow(-1)
         self.update_scene_actions();self.gif_button.hide()
         self.image_label.setText(self.source_path.name+' · локальный исходник')
@@ -1031,6 +1107,7 @@ class MainWindow(QMainWindow):
             self.debounce.start()
 
     def dispatch_render(self):
+        if self.draw_controls.fill_busy:return
         if self.image_source is not None and not self.render_inflight and self.image_thread:
             self.debounce.stop()
             self.render_inflight = True
@@ -1043,7 +1120,7 @@ class MainWindow(QMainWindow):
 
     def finish_text_animation(self):
         if self.closing or self.image_source is None or not self.text_animation_pending:return
-        if self.preview._drag_origin is not None:
+        if self.preview._drag_origin is not None or self.preview._paint_down:
             self.text_idle.start();return
         self.text_animation_pending=False;self.generation+=1;self.prepared=None
         self.debounce.stop();self.update_memory();self.dispatch_render()
@@ -1101,9 +1178,12 @@ class MainWindow(QMainWindow):
         self.settings_tabs.setTabText(1,'Текст · только картинки' if animated else 'Текст · режим просмотра' if scene else 'Текст и движение')
         self.settings_tabs.setTabToolTip(1,'Для сохранённой картинки сначала нажми «Редактировать…». Текст поверх GIF пока не поддерживается; можно создать новую текстовую сцену слева.')
         self.compare_button.setEnabled(bool(editable and self.prepared and self.prepared.before))
-        self.save_project_button.setEnabled(bool(editable and not animated))
+        self.save_project_button.setEnabled(bool(editable and not animated and not self.draw_controls.fill_busy))
         self.open_project_button.setEnabled(not self.busy and not self.cache_loading and not self.closing)
         self.preview.set_interactive(editable)
+        self.draw_controls.setEnabled(editable and not animated)
+        self.new_drawing_button.setEnabled(not self.busy and not self.cache_loading and not self.closing)
+        self.update_drawing_view()
         projection = storage_projection(self.snapshot.capabilities) if self.snapshot else None
         if scene:
             key = (self.snapshot.port, scene.id, scene.checksum, scene.width, scene.height)
@@ -1150,7 +1230,7 @@ class MainWindow(QMainWindow):
                 + ("\nСтарая библиотека превышает новый бюджет. Сцены сохранены; удали лишнее или уменьши файл." if caps.library_used > caps.library_limit else ""))
         self.storage_bar.set_projection(projection)
         self.upload_button.setText(f"{'СОХРАНИТЬ' if self.source_asset is not None else 'ЗАМЕНИТЬ'} СЦЕНУ {self.replace_target[0]}" if self.replace_target else "ЗАЛИТЬ В ЗАКОЛКУ")
-        self.upload_button.setEnabled(enabled and not self.busy and not self.closing and not self.cache_loading and self.selected_scene() is None)
+        self.upload_button.setEnabled(enabled and not self.busy and not self.closing and not self.cache_loading and not self.draw_controls.fill_busy and self.selected_scene() is None)
         self.memory_help.setVisible(bool(self.prepared and self.snapshot and not enabled and not self.busy and not self.cache_loading and self.selected_scene() is None))
 
     def begin_upload(self):
@@ -1204,6 +1284,7 @@ class MainWindow(QMainWindow):
             self.source_asset = None
             self.prepared = None
             self.text_controls.set_document()
+            self.draw_controls.set_document(target=self.controls.target)
             self.restore_editor_controls()
         self.replace_target = None
         self.replace_device_id = None
@@ -1245,6 +1326,7 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def closeEvent(self, event):
+        self.preview.animation_timer.stop()
         self.notifications.shutdown()
         if self.library_dialog is not None and self.library_dialog.isVisible():
             self.library_dialog.close()
@@ -1255,7 +1337,9 @@ class MainWindow(QMainWindow):
         self.preview_cancel.set()
         self.debounce.stop()
         self.text_idle.stop()
-        threads = [t for t in (self.device_thread, self.image_thread) if t and t.isRunning()]
+        # isRunning() can become false before native thread cleanup completes.
+        # Join non-blockingly before allowing the parent/QThread to be destroyed.
+        threads = [t for t in (self.device_thread, self.image_thread) if t and not t.wait(0)]
         if threads:
             for thread in threads:
                 thread.requestInterruption()

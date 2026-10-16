@@ -9,7 +9,7 @@ from .image import Placement, prepare_image as prepare_static, PreparedImage
 
 def prepare_image(source, placement):
     # Static quality settings must never change existing GIF encoding/timing.
-    return prepare_static(source,replace(placement,resampling='bicubic',sharpness=0,dithering=False,text_layers=(),text_motion='static'),comparison=False)
+    return prepare_static(source,replace(placement,resampling='bicubic',sharpness=0,dithering=False,text_layers=(),text_motion='static',paint_pixels=b''),comparison=False)
 from .rgb565 import decode_rgb565
 from collections import OrderedDict
 from ..core.capacity import MAX_FRAMES

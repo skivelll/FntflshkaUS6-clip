@@ -116,6 +116,7 @@ class TextTests(unittest.TestCase):
             source,loaded=load_project(path);self.assertEqual(loaded,p)
             with zipfile.ZipFile(path) as archive:pixels=archive.read('source.png')
             values=asdict(Placement())
+            values.pop('paint_pixels',None)
             for key in ('text_layers','text_motion','text_speed','text_pause'):values.pop(key)
             with zipfile.ZipFile(path,'w') as archive:
                 archive.writestr('source.png',pixels);archive.writestr('settings.json',json.dumps({'version':1,'placement':values}))

@@ -331,6 +331,24 @@ class SmokeCheck(QObject):
             elif self.step==35 and w.snapshot and not w.busy and len(w.snapshot.scenes)==self.text_scene_count+2:
                 assert w.snapshot.scenes[-1].type==2 and self.reads==0
                 self.results.append('scroll_text_upload_loop_seam_no_reads')
+                w.new_drawing_scene();w.draw_controls.set_color('#58c7ff');w.draw_controls.size.setValue(4)
+                w.draw_controls.start(20,20);w.draw_controls.move(80,80);w.draw_controls.finish()
+                w.draw_controls.set_color('#7566d9');w.draw_controls.tool.setCurrentIndex(2);w.draw_controls.start(300,160)
+                self.step=36
+            elif self.step==36 and not w.draw_controls.fill_busy and w.prepared:
+                assert len(w.render_placement().paint_pixels)==320*172*4
+                self.drawing_asset=w.prepared.asset;self.drawing_path=Path(self.temp.name)/'drawing.fclipimage'
+                w.request_project.emit(('save',self.drawing_path,w.image_source,w.render_placement()))
+                self.results.append('drawing_stroke_async_fill_exact_preview');self.step=37
+            elif self.step==37 and self.drawing_path.exists():
+                w.request_project.emit(('load',self.drawing_path,None,None));self.step=38
+            elif self.step==38 and w.source_path==self.drawing_path and w.prepared:
+                assert w.prepared.asset==self.drawing_asset
+                self.results.append('drawing_project_worker_roundtrip')
+                self.drawing_scene_count=len(w.snapshot.scenes);w.begin_upload();self.step=39
+            elif self.step==39 and w.snapshot and not w.busy and len(w.snapshot.scenes)==self.drawing_scene_count+1:
+                assert self.reads==0 and w.snapshot.scenes[-1].active
+                self.results.append('drawing_upload_ack_active_no_usb')
                 self.finish()
         except Exception as error:
             log.exception("Bundled smoke failed")

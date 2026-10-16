@@ -18,8 +18,13 @@ def save_project(path,source,placement):
         raise ValueError('Исходник слишком большой для проекта: максимум 64 MiB.')
     from .text_model import validate_layers
     validate_layers(placement.text_layers)
-    metadata=json.dumps({'version':2,'placement':asdict(placement)},ensure_ascii=False).encode('utf-8')
+    values=asdict(placement);pixels=values.pop('paint_pixels')
+    from .drawing import paint_image
+    drawing=io.BytesIO()
+    (paint_image(pixels,(placement.width,placement.height)) if pixels else Image.new('RGBA',(placement.width,placement.height))).save(drawing,format='PNG')
+    metadata=json.dumps({'version':3,'placement':values},ensure_ascii=False).encode('utf-8')
     if len(metadata)>32768:raise ValueError('Слишком большие настройки проекта.')
+    if data.tell()+drawing.tell()+len(metadata)+4096>MAX_PROJECT:raise ValueError('Проект с рисунком превышает 64 MiB.')
     path=Path(path)
     fd,temp=tempfile.mkstemp(prefix='.clip-image-',suffix='.tmp',dir=path.parent)
     try:
@@ -27,6 +32,7 @@ def save_project(path,source,placement):
             with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_STORED) as archive:
                 archive.writestr('source.png',data.getvalue())
                 archive.writestr('settings.json',metadata)
+                archive.writestr('drawing.png',drawing.getvalue())
             stream.flush();os.fsync(stream.fileno())
         os.replace(temp,path)
     finally:
@@ -38,15 +44,17 @@ def load_project(path):
     if path.stat().st_size>MAX_PROJECT:raise ValueError('Проект превышает 64 MiB.')
     with zipfile.ZipFile(path) as archive:
         entries=archive.infolist()
-        if len(entries)!=2 or {e.filename for e in entries}!={'source.png','settings.json'}:
+        names={e.filename for e in entries}
+        if len(names)!=len(entries) or names not in ({'source.png','settings.json'},{'source.png','settings.json','drawing.png'}):
             raise ValueError('Неверная структура проекта изображения.')
         if any(e.flag_bits&1 or e.file_size>MAX_PROJECT for e in entries) or sum(e.file_size for e in entries)>MAX_PROJECT:
             raise ValueError('Проект превышает безопасный размер.')
         if archive.getinfo('settings.json').file_size>32768:raise ValueError('Слишком большие настройки проекта.')
         metadata=json.loads(archive.read('settings.json'))
-        if not isinstance(metadata,dict) or set(metadata)!={'version','placement'} or type(metadata.get('version')) is not int or metadata.get('version') not in (1,2):raise ValueError('Неизвестная версия проекта.')
+        if not isinstance(metadata,dict) or set(metadata)!={'version','placement'} or type(metadata.get('version')) is not int or metadata.get('version') not in (1,2,3):raise ValueError('Неизвестная версия проекта.')
+        if ('drawing.png' in names)!=(metadata['version']==3):raise ValueError('Состав проекта не совпадает с версией.')
         values=metadata.get('placement')
-        fields=set(asdict(Placement()));text_fields={'text_layers','text_motion','text_speed','text_pause'}
+        fields=set(asdict(Placement()))-{'paint_pixels'};text_fields={'text_layers','text_motion','text_speed','text_pause'}
         if not isinstance(values,dict) or not fields-text_fields<=set(values)<=fields:raise ValueError('Неверные настройки проекта.')
         from .text_model import TextLayer,validate_layers
         try:values['text_layers']=validate_layers(tuple(TextLayer(**layer) for layer in values.get('text_layers',())))
@@ -68,4 +76,11 @@ def load_project(path):
             if image.format!='PNG' or image.width*image.height>40_000_000 or getattr(image,'is_animated',False):
                 raise ValueError('Нужен статичный PNG до 40 мегапикселей.')
             source=image.convert('RGBA')
+        if metadata['version']==3:
+            if archive.getinfo('drawing.png').file_size>1024*1024:raise ValueError('Слой рисунка слишком большой.')
+            with Image.open(io.BytesIO(archive.read('drawing.png'))) as drawing:
+                if drawing.format!='PNG' or drawing.size!=(p.width,p.height) or getattr(drawing,'is_animated',False):raise ValueError('Неверный размер или формат слоя рисунка.')
+                rgba=drawing.convert('RGBA')
+                from dataclasses import replace
+                p=replace(p,paint_pixels=rgba.tobytes() if rgba.getbbox() else b'')
     return source,p

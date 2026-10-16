@@ -282,7 +282,7 @@ class LibraryDialog(QDialog):
             event.ignore()
             return
         self.closing = True
-        if self.thread.isRunning():
+        if not self.thread.wait(0):
             self.thread.requestInterruption()
             self.thread.quit()
             event.ignore()

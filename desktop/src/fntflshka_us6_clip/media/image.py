@@ -25,6 +25,7 @@ class Placement:
     text_motion: str = 'static'
     text_speed: int = 40
     text_pause: int = 0
+    paint_pixels: bytes = b''
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,9 @@ def prepare_image(source, placement: Placement, *, comparison=True):
     if placement.text_layers:
         from .text import prepare_text
         return prepare_text(source,placement)
+    if placement.paint_pixels:
+        from .drawing import prepare_paint
+        return prepare_paint(prepare_image(source,replace(placement,paint_pixels=b''),comparison=comparison),placement)
     width, height = placement.width, placement.height
     if not 1 <= width <= 320 or not 1 <= height <= 172 or not 10 <= placement.scale <= 400:
         raise ValueError("Неподдерживаемый размер экрана или масштаб.")

@@ -31,7 +31,7 @@ Lanczos рассчитывает только видимый прямоугол�
 ## Локальные проекты
 
 «Сохранить проект…» явно сохраняет файл `.fclipimage`: ZIP с ровно `source.png`
-и `settings.json`; version1 читается, новые version2 включают текстовые слои.
+и `settings.json`; version1/2 читаются, новые version3 также содержат отдельный `drawing.png`.
 Исходное RGBA после EXIF orientation и параметры
 размещения/обработки хранятся отдельно от платы, `.fclip` коллекций, preferences
 и автоматического RAM cache. Никакие USB identity, trust или сцены в проект не

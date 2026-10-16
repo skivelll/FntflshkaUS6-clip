@@ -92,6 +92,7 @@ class ImageQualityTests(unittest.TestCase):
             path=Path(folder)/'bad.fclipimage';save_project(path,Image.new('RGB',(1,1)),Placement())
             with zipfile.ZipFile(path) as archive:pixels=archive.read('source.png')
             data=asdict(Placement());data['sharpness']=500
+            data.pop('paint_pixels',None)
             with zipfile.ZipFile(path,'w') as archive:
                 archive.writestr('source.png',pixels);archive.writestr('settings.json',json.dumps({'version':1,'placement':data}))
             with self.assertRaises(ValueError):load_project(path)
