@@ -97,6 +97,28 @@ static void test_animation_asset(void)
     assert(!asset_validate_bytes(data, sizeof(data), NULL)); // frame CRC, despite valid outer CRCs
 }
 
+static void test_compressed_asset(void)
+{
+    uint8_t data[104]={0}, raw[64];
+    memcpy(data,"HCAS",4); data[4]=1; data[5]=2; data[6]=1;
+    wire_put16(data+8,32); wire_put16(data+10,1); wire_put32(data+12,80);
+    wire_put16(data+24,2); data[27]=1; wire_put32(data+32,64);
+    for (unsigned i=0;i<2;++i) {
+        uint8_t *entry=data+40+i*28;
+        wire_put32(entry,72+i*4); wire_put32(entry+4,4);
+        wire_put32(entry+8,250); wire_put16(entry+20,32); wire_put16(entry+22,1);
+        entry[24]=1; entry[25]=i ? 0 : 1;
+        for (unsigned p=0;p<32;++p) wire_put16(raw+p*2,i ? 0x001F : 0xF800);
+        wire_put32(entry+12,wire_crc32(raw,sizeof(raw)));
+    }
+    wire_put16(data+96,32); wire_put16(data+98,0xF800); wire_put16(data+100,32); wire_put16(data+102,0x001F);
+    wire_put32(data+16,wire_crc32(data+24,80)); wire_put32(data+20,wire_crc32(data,20));
+    assert(asset_validate_bytes(data,sizeof(data),NULL));
+    data[96]=0; // zero RLE run, while outer checksums are valid
+    wire_put32(data+16,wire_crc32(data+24,80)); wire_put32(data+20,wire_crc32(data,20));
+    assert(!asset_validate_bytes(data,sizeof(data),NULL));
+}
+
 static void test_manifest(void)
 {
     Manifest m = {0};
@@ -138,6 +160,32 @@ static void test_manifest(void)
     assert(titled.scenes[0].title[0] == 0);
 }
 
+static void test_manifest_capacity(void)
+{
+    static Manifest full, parsed;
+    static char json[MANIFEST_MAX_BYTES];
+    for (uint32_t i = 1; i <= MANIFEST_MAX_SCENES; ++i) {
+        ManifestScene scene = {.id = i, .order = i - 1, .type = 1,
+            .width = 1, .height = 1, .checksum = UINT32_MAX};
+        snprintf(scene.filename, sizeof(scene.filename), "scenes/%04ua.bin", (unsigned)i);
+        for (size_t j = 0; j < MANIFEST_TITLE_MAX; ++j) scene.title[j] = j % 2 ? '\\' : '"';
+        assert(manifest_upsert(&full, &scene));
+    }
+    full.active = MANIFEST_MAX_SCENES;
+    size_t length = manifest_encode(&full, json, sizeof(json));
+    assert(length && manifest_parse(json, length, &parsed));
+    assert(parsed.count == MANIFEST_MAX_SCENES && parsed.active == MANIFEST_MAX_SCENES);
+    assert(storage_charge(26) == 4096 && storage_charge(LIBRARY_MAX_BYTES) == LIBRARY_MAX_BYTES);
+    // ID space is independent of count: high IDs remain bounded and canonical.
+    assert(manifest_delete(&full, 1));
+    ManifestScene high = {.id = MANIFEST_ID_MAX, .type = 1, .width = 1, .height = 1};
+    snprintf(high.filename, sizeof(high.filename), "scenes/%04ua.bin", (unsigned)high.id);
+    assert(manifest_upsert(&full, &high));
+    length = manifest_encode(&full, json, sizeof(json));
+    assert(length && manifest_parse(json, length, &parsed));
+    assert(manifest_find(&parsed, MANIFEST_ID_MAX));
+}
+
 static void test_interrupted_upload(void)
 {
     const uint8_t data[] = {1, 2, 3, 4};
@@ -157,8 +205,10 @@ int main(void)
 {
     test_asset();
     test_animation_asset();
+    test_compressed_asset();
     test_protocol();
     test_manifest();
+    test_manifest_capacity();
     test_interrupted_upload();
     puts("firmware foundation tests: OK");
     return 0;

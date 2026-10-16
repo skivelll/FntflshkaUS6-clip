@@ -1,5 +1,9 @@
 # FntflshkaUS6 clip USB Serial protocol v1
 
+Firmware1.7: актуальные лимиты, pagination, quota и cleanup описаны в
+[library_capacity.md](library_capacity.md). Ограничения восьми сцен/512 KiB
+в описаниях предыдущих версий ниже относятся к legacy firmware.
+
 Transport: USB Serial/JTAG CDC at 115200, 8N1. PlatformIO/esptool flashing
 remains available on the same port. The CLI scans for USB ID `303a:1001`, then
 requires a valid `HELLO` response containing `FntflshkaUS6 clip`.

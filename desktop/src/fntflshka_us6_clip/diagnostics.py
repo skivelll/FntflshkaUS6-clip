@@ -39,17 +39,28 @@ class DeviceCheck(QObject):
             if self.stage == 0 and w.snapshot and not w.cache_loading:
                 self.before = w.snapshot
                 assert len(w.scene_previews) == len(w.snapshot.scenes), "Not all assets are cached"
-                reads = self.reads
-                for row in range(w.scenes.count()):
-                    w.scenes.setCurrentRow(row)
-                    assert not w.preview.image.isNull(), "Missing preview"
-                assert self.reads == reads, "Selection fetched assets"
+                self.selection_reads = self.reads
+                self.selection_row = 0
+                self.stage = 2
+                if w.scenes.count():
+                    w.scenes.setCurrentRow(0)
+            elif self.stage == 2:
+                # Animation decode is asynchronous in ImageWorker. Let the Qt
+                # loop deliver it before checking/advancing to the next scene.
+                if self.selection_row < w.scenes.count():
+                    if w.preview.image.isNull():
+                        return
+                    self.selection_row += 1
+                    if self.selection_row < w.scenes.count():
+                        w.scenes.setCurrentRow(self.selection_row)
+                        return
+                assert self.reads == self.selection_reads, "Selection fetched assets"
                 self.payload = {"port": w.snapshot.port, "device_id": w.snapshot.device_id,
                                 "firmware": w.snapshot.firmware_version,
                                 "storage_total": w.snapshot.capabilities.storage_total,
                                 "storage_free": w.snapshot.capabilities.storage_free,
                                 "scenes": [s.__dict__ for s in w.snapshot.scenes],
-                                "preloaded_assets": len(w.scene_previews), "reads_before_reconnect": reads}
+                                "preloaded_assets": len(w.scene_previews), "reads_before_reconnect": self.selection_reads}
                 w.reconnect_device()
                 self.stage = 1
             elif self.stage == 1 and w.snapshot and not w.cache_loading:

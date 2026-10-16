@@ -51,6 +51,11 @@ class SmokeCheck(QObject):
             if time.monotonic() - self.started > 60:
                 raise TimeoutError(f"Smoke timed out at step {self.step}")
             if self.step == 0 and w.snapshot and not w.cache_loading:
+                assert w.isMaximized() and w.columns.count()==3
+                assert w.scene_panel.isAncestorOf(w.scenes)
+                assert w.scene_actions_panel.isAncestorOf(w.upload_button)
+                assert w.settings_panel.isAncestorOf(w.controls)
+                self.results.append('maximized_three_column_workspace')
                 assert w.snapshot.port == "ДЕМО"
                 path = Path(self.temp.name) / "картинка.png"
                 Image.new("RGB", (200, 200), "red").save(path)
@@ -129,7 +134,8 @@ class SmokeCheck(QObject):
                 w.controls.scale_spin.setValue(80)  # Expose margins, so the rendered pixels must change.
                 self.step = 12
             elif self.step == 12 and w.prepared:
-                assert w.storage_bar.projection.upload == len(w.prepared.asset)
+                from .core.capacity import allocated_size
+                assert w.storage_bar.projection.upload == allocated_size(len(w.prepared.asset))
                 self.report.parent.mkdir(parents=True, exist_ok=True)
                 w.grab().save(str(self.report.with_name(self.report.stem + "-editor.png")))
                 w.busy = True
@@ -140,7 +146,7 @@ class SmokeCheck(QObject):
                 assert w.source_asset is None and len(w.snapshot.scenes) == 2
                 assert w.snapshot.scenes[1].id == 1 and w.snapshot.scenes[1].title == 'Тест "exe"'
                 assert w.snapshot.scenes[1].checksum != self.edit_checksum
-                assert w.storage_bar.projection.reclaim == 110104
+                assert w.storage_bar.projection.reclaim == 110592
                 self.results.append("cached_scene_edit_same_id_storage_bar")
                 self.reads_before_reconnect = self.reads
                 w.reconnect_device()
@@ -243,6 +249,11 @@ class SmokeCheck(QObject):
                 self.step = 24
             elif self.step == 24 and len(w.preview.animation) == 2:
                 assert self.reads == 0
+                assert w.snapshot.capabilities.supports_library_budget
+                assert w.snapshot.capabilities.library_limit == 820 * 1024
+                assert w.storage_bar.projection.library
+                assert "Библиотека:" in w.memory.text()
+                self.results.append("fixed_library_budget_and_allocation_preview")
                 self.results.append("gif_both_profiles_upload_cached_animation")
                 w.grab().save(str(self.report.with_name(self.report.stem + "-animation.png")))
                 w.open_library()
@@ -260,6 +271,66 @@ class SmokeCheck(QObject):
                 assert len(w.snapshot.scenes) == 4 and w.snapshot.scenes[-1].type == 2
                 assert self.reads == 0
                 self.results.append("animation_library_preview_restore_no_reads")
+                from .problems import problem
+                from .core.protocol import DeviceNack
+                w.notify_error(TimeoutError('bundled diagnostic timeout'),'upload')
+                notice=w.notifications.dialog
+                assert notice.isVisible() and 'не подтверждено' in notice.state.text()
+                notice.toggle.setChecked(True)
+                assert notice.details.isVisible() and 'TimeoutError' in notice.details.toPlainText()
+                w.notifications.present(problem(DeviceNack(4),'scene'))
+                assert len(w.notifications.pending)==1
+                assert not w.error_sound.isChecked()
+                self.results.append('friendly_error_details_report_no_usb')
+                self.notice_ticks=self.ticks
+                notice.accept();self.step=28
+            elif self.step==28 and w.notifications.last.operation=='scene' and w.notifications.dialog.isVisible():
+                assert self.ticks>self.notice_ticks
+                assert 'nack_code' in w.notifications.dialog.details.toPlainText()
+                self.results.append('error_queue_nonblocking_event_loop')
+                w.notifications.dialog.accept()
+                self.quality_path=Path(self.temp.name)/'quality.png'
+                Image.linear_gradient('L').resize((640,344)).convert('RGB').save(self.quality_path)
+                w.import_image(self.quality_path)
+                w.controls.pixel_art.setChecked(False)
+                w.controls.dithering.setChecked(True)
+                self.step=29
+            elif self.step==29 and w.prepared:
+                assert w.prepared.before is not None and w.compare_button.isEnabled()
+                assert w.prepared.preview.tobytes()!=w.prepared.before.tobytes()
+                from .ui.comparison import ComparisonDialog
+                dialog=ComparisonDialog(w.prepared.before,w.prepared.preview,w);dialog.show();dialog.close()
+                self.quality_bytes=w.prepared.asset
+                self.project_path=Path(self.temp.name)/'quality.fclipimage'
+                w.request_project.emit(('save',self.project_path,w.image_source,w.controls.placement()))
+                self.results.append('static_quality_exact_preview_compare')
+                self.step=30
+            elif self.step==30 and self.project_path.exists():
+                w.request_project.emit(('load',self.project_path,None,None))
+                self.step=31
+            elif self.step==31 and w.source_path==self.project_path and w.prepared:
+                assert w.prepared.asset==self.quality_bytes
+                assert self.reads==0
+                self.results.append('local_source_project_worker_roundtrip_no_usb')
+                w.new_text_scene();w.text_controls.add();w.text_controls.text.setPlainText('Привет :3')
+                self.step=32
+            elif self.step==32 and w.prepared:
+                assert w.prepared.before is not None and w.preview.interactive
+                assert w.prepared.preview.getbbox() is not None
+                self.text_scene_count=len(w.snapshot.scenes)
+                w.begin_upload();self.step=33
+            elif self.step==33 and not w.busy and len(w.snapshot.scenes)==self.text_scene_count+1:
+                self.results.append('static_text_upload_ack_active_no_reads')
+                w.text_controls.speed.setValue(120);w.text_controls.motion.setCurrentIndex(1)
+                assert w.text_animation_pending and w.prepared is None and not w.upload_button.isEnabled()
+                self.results.append('text_gesture_draft_waits_for_final_asset')
+                self.step=34
+            elif self.step==34 and w.prepared and w.prepared.frames:
+                assert w.prepared.frames[0][0].tobytes()==w.prepared.frames[-1][0].tobytes()
+                w.begin_upload();self.step=35
+            elif self.step==35 and w.snapshot and not w.busy and len(w.snapshot.scenes)==self.text_scene_count+2:
+                assert w.snapshot.scenes[-1].type==2 and self.reads==0
+                self.results.append('scroll_text_upload_loop_seam_no_reads')
                 self.finish()
         except Exception as error:
             log.exception("Bundled smoke failed")

@@ -1,5 +1,9 @@
 # Scene manager and device previews — 2026-10-15
 
+Firmware1.7: актуальные лимиты, pagination, quota и cleanup описаны в
+[library_capacity.md](library_capacity.md). Ограничения восьми сцен/512 KiB
+в описаниях предыдущих версий ниже относятся к legacy firmware.
+
 ## Scope
 
 Desktop now supports selecting a stored scene, activating it, deleting with

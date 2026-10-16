@@ -271,11 +271,11 @@ class EditorGuiTests(unittest.TestCase):
     def test_memory_bar_changes_between_upload_and_delete_forecasts(self):
         w = self.window
         self.import_red()
-        self.assertEqual(w.storage_bar.projection.upload, 110104)
+        self.assertEqual(w.storage_bar.projection.upload, 110592)
         w.begin_upload()
         self.assertTrue(wait_for(lambda: not w.busy and len(w.snapshot.scenes) == 1))
         w.scenes.setCurrentRow(0)
-        self.assertEqual(w.storage_bar.projection.reclaim, 110104)
+        self.assertEqual(w.storage_bar.projection.reclaim, 110592)
         self.assertEqual(w.storage_bar.projection.upload, 0)
         self.assertIn("≈", w.memory.text())
         with patch("fntflshka_us6_clip.ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes):

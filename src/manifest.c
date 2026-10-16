@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -44,7 +45,8 @@ bool manifest_rename(Manifest *manifest, uint32_t id, const uint8_t *title, size
 bool manifest_reorder(Manifest *manifest, const uint32_t *ids, size_t count)
 {
     if (count != manifest->count || !ids) return false;
-    Manifest next = *manifest;
+    static Manifest next;
+    next = *manifest;
     for (size_t i = 0; i < count; ++i) {
         const ManifestScene *scene = manifest_find(manifest, ids[i]);
         if (!scene) return false;
@@ -101,7 +103,7 @@ void manifest_sort(Manifest *manifest)
 
 bool manifest_upsert(Manifest *manifest, const ManifestScene *scene)
 {
-    if (scene->id == 0 || scene->id > MANIFEST_MAX_SCENES ||
+    if (scene->id == 0 || scene->id > MANIFEST_ID_MAX ||
         (scene->type != ASSET_TYPE_STATIC && scene->type != ASSET_TYPE_ANIMATION) || !scene->width || !scene->height ||
         scene->width > ASSET_MAX_WIDTH || scene->height > ASSET_MAX_HEIGHT ||
         !valid_filename(scene->id, scene->filename)) return false;
@@ -141,11 +143,12 @@ bool manifest_parse(const char *json, size_t length, Manifest *out)
     if (!cJSON_IsObject(root)) { cJSON_Delete(root); return false; }
     while (end < json + length && isspace((unsigned char)*end)) ++end;
     if (end != json + length) { cJSON_Delete(root); return false; }
-    Manifest parsed = {0};
+    static Manifest parsed;
+    memset(&parsed, 0, sizeof(parsed));
     uint32_t version;
     const cJSON *scenes = cJSON_GetObjectItemCaseSensitive(root, "scenes");
     bool ok = json_uint(root, "version", 1, &version) && version == 1 &&
-              json_uint(root, "active", MANIFEST_MAX_SCENES, &parsed.active) &&
+              json_uint(root, "active", MANIFEST_ID_MAX, &parsed.active) &&
               cJSON_IsArray(scenes) &&
               cJSON_GetArraySize(scenes) <= (int)MANIFEST_MAX_SCENES;
     for (int i = 0; ok && i < cJSON_GetArraySize(scenes); ++i) {
@@ -153,7 +156,7 @@ bool manifest_parse(const char *json, size_t length, Manifest *out)
         ManifestScene scene = {0};
         uint32_t type, width, height;
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "file");
-        ok = cJSON_IsObject(item) && json_uint(item, "id", MANIFEST_MAX_SCENES, &scene.id) &&
+        ok = cJSON_IsObject(item) && json_uint(item, "id", MANIFEST_ID_MAX, &scene.id) &&
              json_uint(item, "order", UINT32_MAX, &scene.order) &&
              json_uint(item, "type", 255, &type) &&
              json_uint(item, "width", ASSET_MAX_WIDTH, &width) &&

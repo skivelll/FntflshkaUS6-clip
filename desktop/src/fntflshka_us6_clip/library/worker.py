@@ -4,6 +4,7 @@ import uuid
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from .archive import load, save
 from ..media.image import scene_canvas, SceneSource
+from ..problems import problem
 
 log = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ class LibraryWorker(QObject):
     loaded = Signal(object, object)
     saved = Signal(object)
     error = Signal(str)
+    failure = Signal(object)
     done = Signal()
 
     def __init__(self, folder):
@@ -61,6 +63,8 @@ class LibraryWorker(QObject):
                 raise ValueError("Неизвестное действие библиотеки.")
         except Exception as error:
             log.exception("Library operation failed")
+            self.failure.emit(problem(error,'library',context={'action':request[0],'folder':str(self.folder),
+                'file_path':str(request[1]) if request[0] in ('load','import') else str(request[1][1]) if request[0]=='export' else None}))
             if isinstance(error, ValueError):
                 message = str(error) if any("А" <= c <= "я" or c in "ёЁ" for c in str(error)) else "Архив не прошёл проверку целостности или формата. Выбери другую копию."
             else:

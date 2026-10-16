@@ -18,6 +18,12 @@
 #include "diagnostics.h"
 #include "animation.h"
 
+static struct {
+    bool pending; uint8_t kind; uint16_t count, received; uint32_t revision;
+    uint32_t ids[MANIFEST_MAX_SCENES], checksums[MANIFEST_MAX_SCENES];
+    Playlist playlist;
+} metadata;
+
 static const char *TAG = "USB";
 #define FIRMWARE_NAME "FntflshkaUS6 clip"
 static ProtocolParser parser;
@@ -111,7 +117,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         const size_t name_length = sizeof(FIRMWARE_NAME) - 1;
         memcpy(reply, FIRMWARE_NAME, name_length);
         reply[name_length] = 1; // Firmware major
-        reply[name_length + 1] = 6; // Firmware minor: optional RGB565 animation
+        reply[name_length + 1] = 8; // Lossless compressed/delta animation encoding
         reply_size = name_length + 2;
         break;
     }
@@ -124,7 +130,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         wire_put16(reply + 2, DISPLAY_WIDTH);
         wire_put16(reply + 4, DISPLAY_HEIGHT);
         reply[6] = ASSET_PIXEL_RGB565;
-        reply[7] = 63; // READ_SCENE, metadata, playlist, transitions, diagnostics, animation.
+        reply[7] = 255; // Includes encoding1 compressed/delta animations.
         wire_put32(reply + 8, 4U * 1024U * 1024U);
         wire_put32(reply + 12, 0); // Physical size is not reliably distinct from configured size.
         wire_put32(reply + 16, (uint32_t)total);
@@ -147,6 +153,7 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
     case CMD_LIST_SCENES: {
         if (n != 0) { error = ERR_BAD_LENGTH; break; }
         const Manifest *manifest = storage_manifest();
+        if (manifest->count > 8) { error = ERR_BAD_STATE; break; }
         reply[0] = (uint8_t)manifest->count;
         reply_size = 1;
         for (size_t i = 0; i < manifest->count; ++i) {
@@ -167,6 +174,102 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
             memcpy(record + 19, s->filename, name_length);
             reply_size += 19 + name_length;
         }
+        break;
+    }
+    case CMD_LIST_SCENES_PAGE: {
+        if (n != 2) { error = ERR_BAD_LENGTH; break; }
+        const Manifest *m = storage_manifest();
+        const size_t offset = wire_u16(p);
+        if (offset > m->count) { error = ERR_BAD_LENGTH; break; }
+        wire_put16(reply, (uint16_t)m->count);
+        wire_put32(reply + 4, m->active); wire_put32(reply + 8, storage_revision());
+        reply_size = 13; size_t i = offset;
+        for (; i < m->count; ++i) {
+            const ManifestScene *s = &m->scenes[i]; const size_t length = strlen(s->filename);
+            if (reply_size + 23 + length > sizeof(reply)) break;
+            uint8_t *r = reply + reply_size;
+            wire_put32(r, s->id); wire_put32(r + 4, s->order); r[8] = s->type;
+            wire_put16(r + 9, s->width); wire_put16(r + 11, s->height);
+            wire_put32(r + 13, s->checksum); r[17] = s->id == m->active; r[18] = (uint8_t)length;
+            memcpy(r + 19, s->filename, length);
+            wire_put32(r + 19 + length, storage_scene_size(s));
+            reply_size += 23 + length; ++reply[12];
+        }
+        wire_put16(reply + 2, (uint16_t)i);
+        break;
+    }
+    case CMD_GET_LIBRARY_POLICY: {
+        uint32_t used;
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        if (!storage_library_used(&used)) { error = ERR_STORAGE; break; }
+        wire_put32(reply, LIBRARY_MAX_BYTES); wire_put32(reply + 4, used);
+        wire_put32(reply + 8, STORAGE_SERVICE_RESERVE); wire_put32(reply + 12, STORAGE_BLOCK_SIZE);
+        wire_put16(reply + 16, MANIFEST_MAX_SCENES); wire_put16(reply + 18, MANIFEST_ID_MAX);
+        wire_put32(reply + 20, storage_revision()); reply_size = 24;
+        break;
+    }
+    case CMD_METADATA_BEGIN: {
+        metadata.pending = false;
+        if ((n != 7 && n != 13) || p[0] > 1 || wire_u16(p + 1) > MANIFEST_MAX_SCENES ||
+            n != (p[0] ? 13U : 7U)) { error = ERR_BAD_LENGTH; break; }
+        if (storage_upload_busy() || wire_u32(p + 3) != storage_revision()) { error = ERR_BAD_STATE; break; }
+        metadata.kind = p[0]; metadata.count = wire_u16(p + 1); metadata.received = 0;
+        metadata.revision = wire_u32(p + 3);
+        if (metadata.kind) {
+            metadata.playlist = (Playlist){.enabled = p[7], .transition = p[8],
+                .interval_ms = wire_u32(p + 9), .count = (uint8_t)metadata.count};
+            if (p[7] > 1 || p[8] > 5 || metadata.playlist.interval_ms < 1000 ||
+                metadata.playlist.interval_ms > 86400000 || (p[7] && !metadata.count)) {
+                error = ERR_BAD_LENGTH; break;
+            }
+        } else if (metadata.count != storage_manifest()->count) { error = ERR_BAD_STATE; break; }
+        metadata.pending = true;
+        break;
+    }
+    case CMD_METADATA_CHUNK: {
+        if (!metadata.pending || storage_upload_busy()) { error = ERR_BAD_STATE; break; }
+        if (n < 10 || (n - 2) % 8 || wire_u16(p) != metadata.received ||
+            metadata.received + (n - 2) / 8 > metadata.count) { metadata.pending = false; error = ERR_BAD_LENGTH; break; }
+        for (size_t i = 2; i < n; i += 8) {
+            metadata.ids[metadata.received] = wire_u32(p + i);
+            metadata.checksums[metadata.received++] = wire_u32(p + i + 4);
+        }
+        break;
+    }
+    case CMD_METADATA_COMMIT: {
+        if (n != 0 || !metadata.pending || metadata.received != metadata.count ||
+            metadata.revision != storage_revision() || storage_upload_busy()) {
+            metadata.pending = false; error = ERR_BAD_STATE; break;
+        }
+        metadata.pending = false;
+        for (size_t i = 0; i < metadata.count; ++i) {
+            const ManifestScene *s = manifest_find(storage_manifest(), metadata.ids[i]);
+            if (!s || s->checksum != metadata.checksums[i]) { error = ERR_BAD_STATE; break; }
+            for (size_t j = 0; j < i; ++j)
+                if (metadata.ids[j] == metadata.ids[i]) { error = ERR_BAD_LENGTH; break; }
+            metadata.playlist.ids[i] = metadata.ids[i];
+            if (error != ERR_NONE) break;
+        }
+        if (error != ERR_NONE) break;
+        if (!metadata.kind) error = storage_reorder(metadata.ids, metadata.checksums, metadata.count);
+        else {
+            error = (ProtocolError)playlist_set(&metadata.playlist, now_ms());
+            if (error == ERR_NONE && metadata.playlist.enabled) {
+                *fallback_mode = !usb_service_show_transition(); playlist_pause(now_ms());
+                if (*fallback_mode) modes_init(now_ms());
+            }
+        }
+        break;
+    }
+    case CMD_GET_PLAYLIST_PAGE: {
+        if (n != 2) { error = ERR_BAD_LENGTH; break; }
+        uint8_t data[10 + PLAYLIST_MAX * 4];
+        const size_t length = playlist_encode_extended(playlist_get(), data), offset = wire_u16(p);
+        if (offset >= length) { error = ERR_BAD_LENGTH; break; }
+        size_t count = length - offset; if (count > 500) count = 500;
+        wire_put16(reply, (uint16_t)length); wire_put16(reply + 2, (uint16_t)offset);
+        wire_put32(reply + 4, ~wire_crc32_update(0xFFFFFFFFU, data, length));
+        memcpy(reply + 8, data + offset, count); reply_size = 8 + count;
         break;
     }
     case CMD_UPLOAD_BEGIN:
@@ -247,6 +350,10 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
         reply_size = n;
         break;
     case CMD_GET_PLAYLIST:
+        if (playlist_get()->count > 8) { error = ERR_BAD_STATE; break; }
+        for (size_t i = 0; i < playlist_get()->count; ++i)
+            if (playlist_get()->ids[i] > 8) { error = ERR_BAD_STATE; break; }
+        if (error != ERR_NONE) break;
         if (n != 0) { error = ERR_BAD_LENGTH; break; }
         playlist_encode(playlist_get(), reply);
         reply_size = PLAYLIST_BYTES;
@@ -271,6 +378,17 @@ static void handle_request(const ProtocolFrame *request, bool *fallback_mode)
     case CMD_BENCH_ACTIVE:
         if (n != 0) { error = ERR_BAD_LENGTH; break; }
         error = diagnostics_active(reply, &reply_size);
+        playlist_pause(now_ms());
+        break;
+    case CMD_BENCH_MANIFEST:
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        error = diagnostics_manifest(reply, &reply_size);
+        playlist_pause(now_ms());
+        break;
+    case CMD_BENCH_ANIMATION:
+        if (n != 0) { error = ERR_BAD_LENGTH; break; }
+        error = diagnostics_animation(reply, &reply_size);
+        if (error == ERR_NONE && !usb_service_show_active()) error = ERR_INVALID_ASSET;
         playlist_pause(now_ms());
         break;
     case CMD_SET_PLAYLIST:

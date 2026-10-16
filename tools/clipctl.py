@@ -68,7 +68,7 @@ def reset_usb_transport(port: str) -> None:
 
 
 def list_scenes(device: ClipDevice) -> None:
-    scenes = decode_scenes(device.request(COMMANDS["list"]))
+    scenes = DeviceClient(device).snapshot().scenes
     for scene in scenes:
         print(f"id={scene.id} order={scene.order} type={scene.type} {scene.width}x{scene.height} "
               f"crc={scene.checksum:08x} {'ACTIVE' if scene.active else ''} {scene.filename}")
@@ -101,7 +101,7 @@ def main() -> None:
         if args.action == "info":
             data = device.request(COMMANDS["capabilities"])
             caps = Capabilities.decode(data)
-            protocol, asset, width, height, pixel, _, configured, physical, total, free, max_asset, chunk, render = caps.__dict__.values()
+            protocol, asset, width, height, pixel, _, configured, physical, total, free, max_asset, chunk, render = tuple(caps.__dict__.values())[:13]
             major, minor = device.firmware_version or (0, 0)
             print(f"port={device.port} firmware={FIRMWARE_NAME.decode()} {major}.{minor} "
                   f"protocol={protocol} asset={asset}")
@@ -109,6 +109,10 @@ def main() -> None:
                   f"physical_flash={physical if physical else 'unknown'}")
             print(f"storage_total={total} storage_free={free} max_asset={max_asset} "
                   f"max_chunk={chunk} render_buffer={render}")
+            if caps.supports_library_budget:
+                policy = DeviceClient(device).snapshot().capabilities
+                print(f"library_used={policy.library_used} library_limit={policy.library_limit} "
+                      f"service_reserve={policy.service_reserve} allocation_block={policy.allocation_block}")
         elif args.action == "storage":
             total, free = struct.unpack("<II", device.request(COMMANDS["storage"]))
             print(f"storage_total={total} storage_free={free}")

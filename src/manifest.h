@@ -4,8 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MANIFEST_MAX_SCENES 8U
-#define MANIFEST_MAX_BYTES 4096U
+#include "capacity.h"
+#define MANIFEST_MAX_SCENES STORAGE_SCENE_LIMIT
+#define MANIFEST_ID_MAX STORAGE_ID_MAX
+#define MANIFEST_MAX_BYTES 65536U
 #define MANIFEST_TITLE_MAX 48U
 
 typedef struct {

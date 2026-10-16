@@ -95,7 +95,7 @@ image: normal firmware upload must preserve user content.
 .\.venv\Scripts\python.exe tools/clipctl.py info
 ```
 
-Choose an unused scene ID (1–8) to preserve existing scenes. Verify the image
+Choose an unused scene ID (1–65535 on firmware1.7; 1–8 on legacy firmware) to preserve existing scenes. Verify the image
 on the LCD, press hardware RESET, then verify the same image and active scene
 again. Software ACK alone does not verify the physical display.
 
@@ -144,7 +144,7 @@ content falls back to the compiled ART/TEXT/ANIMATION demo.
 The [asset format](docs/asset_format.md) is static RGB565 v1. The
 [USB protocol](docs/usb_protocol.md) is framed protocol v1 with CRC32 and
 ACK/NACK. Neither uploading an image nor changing the active scene reflashes
-firmware. Up to eight scene IDs are accepted; the initial workflow uses ID 1.
+firmware. Firmware1.7 uses a fixed820 KiB library budget, up to205 minimum-block scenes; legacy firmware accepts eight IDs. The initial workflow uses ID1.
 
 Ubuntu tools use the existing system Python packages `pyserial` and Pillow:
 
@@ -168,7 +168,7 @@ Historical Ubuntu host-test commands (prefer the portable runner above):
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -Isrc \
   -I/tmp/hairclip-platformio/packages/framework-espidf/components/json/cJSON \
-  tests/foundation_test.c src/wire.c src/asset_format.c src/protocol.c \
+  tests/foundation_test.c src/wire.c src/asset_format.c src/compression.c src/protocol.c \
   src/manifest.c src/upload_guard.c \
   /tmp/hairclip-platformio/packages/framework-espidf/components/json/cJSON/cJSON.c \
   -lm -o /tmp/fntflshkaus6-foundation-test
@@ -250,3 +250,5 @@ cc -std=c11 -Wall -Wextra -Werror -Itests/stubs -Isrc \
 сохранена конфигурация 4 МБ; образ занимает только начало flash. Перед проектом,
 которому нужно больше памяти, следует уточнить ревизию платы.
 
+
+Firmware1.7 storage policy and safe capacity: [library_capacity.md](docs/library_capacity.md).

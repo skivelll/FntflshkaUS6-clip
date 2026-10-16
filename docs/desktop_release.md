@@ -135,3 +135,16 @@ stale lock. Demo и real используют разные lock/settings. Это
 
 Firmware в этой фазе не менялась и не прошивалась. C host tests относятся
 к неизменённой firmware; ограничение отсутствующего native C11 compiler сохраняется.
+## Отдельная проверяемая сборка
+
+Если прежняя portable `.exe` ещё открыта, новую версию можно собрать отдельно:
+
+```powershell
+.venv\Scripts\python.exe tools/build_desktop.py --dist-dir .pio/notifications-dist
+.venv\Scripts\python.exe tools/verify_desktop.py --archive .pio/notifications-dist/FntflshkaUS6-clip-windows-x64.zip
+```
+
+Default output остаётся `desktop/dist`; `--archive` меняет только проверяемый ZIP.
+Для реального запуска новой версии и `--device` закрыть прежнее приложение:
+single-instance lock и USB trust не обходятся. Bundled mock smoke работает отдельно
+и не обращается к плате. Переносить весь onedir folder вместе с `_internal`.

@@ -12,9 +12,10 @@ import zipfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", action="store_true", help="Also run the read-only real USB check; close other app instances first")
+    parser.add_argument('--archive',type=Path,help='Alternative portable ZIP to verify')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    archive = root / "desktop/dist/FntflshkaUS6-clip-windows-x64.zip"
+    archive = (args.archive or root / "desktop/dist/FntflshkaUS6-clip-windows-x64.zip").resolve()
     reports = root / "desktop/build/verification"
     reports.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()

@@ -20,7 +20,11 @@ COMMANDS = {
     "get_playlist": 15, "set_playlist": 16,
     "get_transition": 17, "set_playlist_effect": 18,
     "bench_active": 19,
+    "bench_animation": 29,
     "asset_info": 20, "upload_begin_typed": 21,
+    "list_page": 22, "library_policy": 23, "metadata_begin": 24,
+    "metadata_chunk": 25, "metadata_commit": 26, "playlist_page": 27,
+    "bench_manifest": 28,
 }
 
 

@@ -24,3 +24,7 @@ ProtocolError storage_reorder(const uint32_t *ids, const uint32_t *checksums, si
 FILE *storage_open_active(ManifestScene *scene);
 ProtocolError storage_read_scene(uint32_t id, uint32_t checksum, uint32_t offset,
                                  size_t length, uint8_t *out, size_t *received);
+
+uint32_t storage_scene_size(const ManifestScene *scene);
+bool storage_library_used(uint32_t *used);
+uint32_t storage_revision(void);

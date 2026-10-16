@@ -1,5 +1,9 @@
 # Scene collection phase — 2026-10-15
 
+Firmware1.7: актуальные лимиты, pagination, quota и cleanup описаны в
+[library_capacity.md](library_capacity.md). Ограничения восьми сцен/512 KiB
+в описаниях предыдущих версий ниже относятся к legacy firmware.
+
 Six requested features are implemented: device-side titles, persisted order,
 safe image replacement, thumbnails/active marker, hardware persistence checks,
 and eager application-lifetime scene caching. No GIF/fonts/slideshow work added.

@@ -6,6 +6,7 @@ import zlib
 from .models import Capabilities, Snapshot
 from ..core.protocol import COMMANDS, parse_hello
 from ..core.asset import parse_asset
+from ..core.capacity import LIBRARY_MAX, MAX_SCENES, MAX_ID
 from ..scenes.models import decode_scenes, next_scene_id, estimate_storage
 
 log = logging.getLogger(__name__)
@@ -15,10 +16,41 @@ class DeviceClient:
     def __init__(self, transport):
         self.transport = transport
 
+    def _metadata_transaction(self, kind, records, caps, playlist=None):
+        payload = struct.pack("<BHI", kind, len(records), caps.library_revision)
+        if playlist is not None:
+            playlist.encode_extended()  # Validate before beginning any write.
+            payload += struct.pack("<BBI", playlist.enabled, playlist.transition, playlist.interval_ms)
+        self.transport.request(COMMANDS["metadata_begin"], payload)
+        for offset in range(0, len(records), 60):
+            self.transport.request(COMMANDS["metadata_chunk"], struct.pack("<H", offset) +
+                b"".join(struct.pack("<II", *r) for r in records[offset:offset + 60]))
+        self.transport.request(COMMANDS["metadata_commit"], timeout=20)
+
+    def _extended_playlist(self):
+        from .playlist import Playlist
+        data, token, total = bytearray(), None, None
+        while total is None or len(data) < total:
+            reply = self.transport.request(COMMANDS["playlist_page"], struct.pack("<H", len(data)))
+            if len(reply) <= 8:
+                raise ValueError("Truncated playlist page")
+            length, offset, revision = struct.unpack_from("<HHI", reply)
+            if not 10 <= length <= 10 + MAX_SCENES * 4 or offset != len(data) or len(data) + len(reply) - 8 > length:
+                raise ValueError("Invalid playlist page")
+            if token is not None and (revision != token or length != total):
+                raise ValueError("Playlist changed during read")
+            token, total = revision, length
+            data.extend(reply[8:])
+        if zlib.crc32(data) != token:
+            raise ValueError("Playlist CRC mismatch")
+        return Playlist.decode_extended(data)
+
     def get_playlist(self):
         from .playlist import Playlist
-        value = Playlist.decode(self.transport.request(COMMANDS["get_playlist"]))
         caps = Capabilities.decode(self.transport.request(COMMANDS["capabilities"]))
+        if caps.supports_library_budget:
+            return self._extended_playlist()
+        value = Playlist.decode(self.transport.request(COMMANDS["get_playlist"]))
         if caps.supports_transitions:
             effect = self.transport.request(COMMANDS["get_transition"])
             if len(effect) != 1 or effect[0] > 5:
@@ -39,14 +71,17 @@ class DeviceClient:
                 raise ValueError("Сцена удалена. Убери её из плейлиста.")
             self._check_scene(before, scene_id, expected.checksum)
             records.append(expected.checksum)
-        payload = value.encode() + b"".join(struct.pack("<I", crc) for crc in records)
-        command = COMMANDS["set_playlist"]
-        if before.capabilities.supports_transitions:
-            command = COMMANDS["set_playlist_effect"]
-            payload += bytes([value.transition])
-        elif value.transition:
-            raise ValueError("Для переходов нужна firmware 1.4.")
-        self.transport.request(command, payload, timeout=10)
+        if before.capabilities.supports_library_budget:
+            self._metadata_transaction(1, list(zip(value.ids, records)), before.capabilities, value)
+        else:
+            payload = value.encode() + b"".join(struct.pack("<I", crc) for crc in records)
+            command = COMMANDS["set_playlist"]
+            if before.capabilities.supports_transitions:
+                command = COMMANDS["set_playlist_effect"]
+                payload += bytes([value.transition])
+            elif value.transition:
+                raise ValueError("Для переходов нужна firmware 1.4.")
+            self.transport.request(command, payload, timeout=10)
         if self.get_playlist() != value:
             raise ValueError("Заколка не подтвердила настройки плейлиста.")
         return self.snapshot()
@@ -62,7 +97,34 @@ class DeviceClient:
         if free > total:
             raise ValueError("Invalid free space")
         caps = replace(caps, storage_total=total, storage_free=free)
-        scenes = decode_scenes(self.transport.request(COMMANDS["list"]))
+        if caps.supports_library_budget:
+            scenes, offset, revision, count, active = [], 0, None, None, 0
+            while count is None or offset < count:
+                page = self.transport.request(COMMANDS["list_page"], struct.pack("<H", offset))
+                if len(page) < 13:
+                    raise ValueError("Truncated scene page")
+                total, following, active, token, records = struct.unpack_from("<HHIIB", page)
+                if total > MAX_SCENES or following != offset + records or following > total or (following == offset and total != offset):
+                    raise ValueError("Invalid scene pagination")
+                if revision is not None and (revision != token or total != count):
+                    raise ValueError("Scene list changed during read")
+                scenes.extend(decode_scenes(bytes([records]) + page[13:], extended=True))
+                offset, revision, count = following, token, total
+            if len({s.id for s in scenes}) != len(scenes):
+                raise ValueError("Duplicate scene across pages")
+            scenes = tuple(replace(s, active=s.id == active) for s in scenes)
+            policy = self.transport.request(COMMANDS["library_policy"], timeout=10)
+            if len(policy) != 24:
+                raise ValueError("Invalid library policy length")
+            limit, used, reserve, block, scene_limit, id_limit, token = struct.unpack("<IIIIHHI", policy)
+            if (limit != LIBRARY_MAX or reserve != 160 * 1024 or block != 4096 or
+                scene_limit != MAX_SCENES or id_limit != MAX_ID or token != revision):
+                raise ValueError("Unsupported or changed library policy")
+            caps = replace(caps, library_limit=limit, library_used=used, service_reserve=reserve,
+                           allocation_block=block, scene_limit=scene_limit, id_limit=id_limit,
+                           library_revision=token)
+        else:
+            scenes = decode_scenes(self.transport.request(COMMANDS["list"]))
         if caps.supports_scene_metadata:
             named = []
             for scene in scenes:
@@ -97,8 +159,11 @@ class DeviceClient:
             raise ValueError("Список сцен изменился. Повтори перестановку.")
         for scene_id, crc in records:
             self._check_scene(before, scene_id, crc)
-        payload = bytes([len(records)]) + b"".join(struct.pack("<II", *record) for record in records)
-        self.transport.request(COMMANDS["reorder"], payload)
+        if before.capabilities.supports_library_budget:
+            self._metadata_transaction(0, records, before.capabilities)
+        else:
+            payload = bytes([len(records)]) + b"".join(struct.pack("<II", *record) for record in records)
+            self.transport.request(COMMANDS["reorder"], payload)
         after = self.snapshot()
         if [s.id for s in after.scenes] != [i for i, crc in records]:
             raise ValueError("Заколка не подтвердила новый порядок.")
@@ -123,7 +188,7 @@ class DeviceClient:
             if len(record) != 4:
                 raise ValueError("Неверный размер animation asset.")
             total = struct.unpack("<I", record)[0]
-            if not 24 < total <= 512 * 1024:
+            if not 24 < total <= LIBRARY_MAX:
                 raise ValueError("Неверный размер animation asset.")
         if total > caps.max_asset_size:
             raise ValueError("Сцена превышает допустимый размер.")
@@ -165,6 +230,8 @@ class DeviceClient:
         info = parse_asset(data)
         before = self.snapshot()
         caps = before.capabilities
+        if info.get('encoding') == 1 and not caps.supports_compression:
+            raise ValueError('Для сжатой анимации нужна firmware 1.8. Старую сцену не меняю.')
         if info.get("type") == 2 and not caps.supports_animation:
             raise ValueError("Для загрузки GIF нужна firmware 1.6.")
         if expected_checksum is not None:
@@ -173,14 +240,17 @@ class DeviceClient:
             raise ValueError("Размер сцены больше экрана подключённой заколки.")
         if info.get("type") == 2 and (info["x"] + info["width"] > caps.display_width or info["y"] + info["height"] > caps.display_height):
             raise ValueError("Положение анимации не помещается на этом экране.")
-        estimate = estimate_storage(len(data), caps)
+        old = next((s for s in before.scenes if s.id == scene_id), None)
+        estimate = estimate_storage(len(data), caps, old.size if old else 0)
         if not estimate.fits:
             raise ValueError(estimate.reason)
-        scene_id = next_scene_id(before.scenes) if scene_id is None else scene_id
+        scene_id = next_scene_id(before.scenes, caps) if scene_id is None else scene_id
         if scene_id is None:
-            raise ValueError("Все 8 мест заняты. Удали ненужную сцену из списка.")
-        if not 1 <= scene_id <= 8:
-            raise ValueError("Scene ID must be 1–8")
+            raise ValueError("Нет места для новой сцены. Удали ненужную сцену из списка."
+                             if caps.supports_library_budget else
+                             "Все 8 мест старой прошивки заняты. Удали сцену или обнови прошивку.")
+        if not 1 <= scene_id <= caps.id_limit:
+            raise ValueError("ID сцены превышает возможности подключённой прошивки.")
         log.info("Upload start port=%s scene=%s bytes=%s storage_before=%s", before.port,
                  scene_id, len(data), caps.storage_free)
         command = "upload_begin_typed" if caps.supports_animation else "upload_begin"

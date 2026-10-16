@@ -1,5 +1,9 @@
 # Локальная библиотека и резервные копии
 
+Firmware1.7: актуальные лимиты, pagination, quota и cleanup описаны в
+[library_capacity.md](library_capacity.md). Ограничения восьми сцен/512 KiB
+в описаниях предыдущих версий ниже относятся к legacy firmware.
+
 Окно «Библиотека…» доступно из основной панели. Для просмотра локальных коллекций
 USB не нужен. Firmware 1.2, USB protocol v1, asset v1 и Flash layout не меняются.
 
@@ -94,9 +98,11 @@ JSON содержит `format="fntflshka-us6-clip-collection"`, `version=1`, `ti
 Запись scene: `id`, последовательный `order` 0…N−1, `title`, строгий `asset` path,
 `sha256` всего asset. Asset v1 внутри не перекодируется и не изменяется.
 
-Проверяются: не более 8 уникальных ID 1–8, UTF-8 title до 48 bytes, размеры/CRC
+Проверяются: не более205 уникальных ID1–65535, UTF-8 title до48 bytes, размеры/CRC
 asset/header, SHA256, наличие ACTIVE, версия/порядок/состав архива. Лимиты:
-4 MiB+64 KiB входного ZIP, 16 KiB JSON, 512 KiB на asset, максимум 9 entries.
+5 MiB входного ZIP, 64 KiB JSON, 820 KiB на asset, максимум206 entries;
+суммарно не более4 MiB распакованных assets. Это offline guard; квота устройства
+820 KiB проверяется отдельно при восстановлении. Legacy collections читаются.
 Firmware1.6 поддерживает animation type2 внутри прежнего контейнера version1;
 preview анимаций готовится в library worker и проигрывается offline из RAM.
 Не принимаются лишние/повторные entries, symlinks, шифрование, посторонние пути,

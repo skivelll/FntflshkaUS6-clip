@@ -23,10 +23,15 @@ class Discovery:
         self.trusted = set()
         self.recovery_at = {}
         self.last_error = None
+        self.last_exception = None
+        self.last_ports = []
 
     def find(self, cancelled=lambda: False, on_status=lambda text: None):
         self.last_error = None
-        for port in ordered_ports(list(self.enumerate_ports())):
+        self.last_exception = None
+        ports=list(self.enumerate_ports())
+        self.last_ports=[{name:getattr(port,name,None) for name in ('device','vid','pid','serial_number','description')} for port in ports[:64]]
+        for port in ordered_ports(ports):
             if cancelled():
                 return None
             fingerprint = port_fingerprint(port)
@@ -51,11 +56,12 @@ class Discovery:
                     self.trusted.add(fingerprint)
                     log.info("Connected %r capabilities=%s", fingerprint, snapshot.capabilities)
                     return client, snapshot
-                except ValueError:
+                except ValueError as error:
                     # An explicit different/unsupported identity must never trigger recovery.
                     self.trusted.discard(fingerprint)
                     if (port.vid, port.pid) == (0x303A, 0x1001):
                         self.last_error = "Устройство ответило, но его протокол не подходит для FntflshkaUS6 clip."
+                        self.last_exception = error
                     log.exception("Rejected device %r", fingerprint)
                     if transport:
                         transport.close()
@@ -64,6 +70,7 @@ class Discovery:
                     log.info("Handshake unavailable port=%s", port.device, exc_info=True)
                     if (port.vid, port.pid) == (0x303A, 0x1001):
                         self.last_error = user_error(error)
+                        self.last_exception = error
                     if transport:
                         transport.close()
                     if port_busy(error):

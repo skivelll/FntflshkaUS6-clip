@@ -10,6 +10,8 @@ from ..library.restore import execute as execute_restore, RestoreFailure
 from pathlib import Path
 import uuid
 from dataclasses import replace
+from dataclasses import asdict
+from ..problems import problem
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +20,8 @@ class DeviceWorker(QObject):
     snapshot_ready = Signal(object)
     status = Signal(str)
     error = Signal(str)
+    failure = Signal(object)
+    recovered = Signal(str)
     progress = Signal(int, int)
     upload_done = Signal(object)
     upload_failed = Signal()
@@ -43,7 +47,7 @@ class DeviceWorker(QObject):
         self.last = None
         self.timer = None
         self.cache = SceneCache()
-        self.mock_transport = MockTransport() if mock else None
+        self.mock_transport = MockTransport(budget=True,compression=True) if mock else None
 
     def preload(self, snapshot):
         self.cache.synchronize(snapshot)
@@ -66,6 +70,12 @@ class DeviceWorker(QObject):
     def cancelled(self):
         return QThread.currentThread().isInterruptionRequested()
 
+    def publish_failure(self,error,operation,*,state=None,**context):
+        self.failure.emit(problem(error,operation,context={
+            'snapshot':asdict(self.last) if self.last else None,
+            'last_request':getattr(self.client.transport,'last_request',None) if self.client else None,
+            'last_ack':getattr(self.client.transport,'last_ack',None) if self.client else None,**context},state=state))
+
     @Slot()
     def start(self):
         self.timer = QTimer(self)
@@ -78,6 +88,7 @@ class DeviceWorker(QObject):
     def poll(self):
         if self.cancelled():
             return
+        preloading=False
         try:
             if self.client is None:
                 self.status.emit("● ищу заколку...")
@@ -88,6 +99,7 @@ class DeviceWorker(QObject):
                 else:
                     result = self.discovery.find(self.cancelled, self.status.emit)
                     if result is None:
+                        self.publish_failure(self.discovery.last_exception or FileNotFoundError('No HELLO-verified clip device found'),'connection',ports=self.discovery.last_ports)
                         self.cache_state.emit(False)
                         self.status.emit("● заколка не найдена")
                         self.snapshot_ready.emit(None)
@@ -99,9 +111,13 @@ class DeviceWorker(QObject):
                 snapshot = self.client.snapshot()
             self.last = snapshot
             self.snapshot_ready.emit(snapshot)
+            preloading=True
             self.preload(snapshot)
+            self.recovered.emit('connection')
+            self.recovered.emit('preview')
         except Exception as error:
             log.exception("Disconnect or poll failure")
+            self.publish_failure(error,'preview' if preloading else 'connection')
             self.disconnect()
             self.error.emit(user_error(error))
 
@@ -138,6 +154,7 @@ class DeviceWorker(QObject):
         data, scene_id, checksum, port = request[:4]
         identity_changed = len(request) > 4 and (self.last is None or self.last.device_id != request[4])
         if self.client is None or self.client.transport.port != port or identity_changed:
+            self.publish_failure(ValueError('Подключение изменилось. Выбери сцену заново.'),'upload',scene_id=scene_id,state='Запись не начиналась.')
             self.error.emit("Подключение изменилось. Выбери сцену заново.")
             self.upload_failed.emit()
             return
@@ -145,11 +162,13 @@ class DeviceWorker(QObject):
 
     def perform_upload(self, data, scene_id=None, checksum=None):
         if self.client is None:
+            self.publish_failure(FileNotFoundError('Device not connected'),'upload',scene_id=scene_id,state='Запись не начиналась.')
             self.error.emit("Заколка не найдена. Подключи её по USB-C.")
             self.upload_failed.emit()
             return
         self.timer.stop()
         self.status.emit("● заливаю...")
+        result=None
         try:
             result = self.client.upload(data, self.progress.emit, self.cancelled,
                                         scene_id=scene_id, expected_checksum=checksum)
@@ -165,8 +184,14 @@ class DeviceWorker(QObject):
             self.upload_done.emit(result)
         except Exception as error:
             log.exception("Upload failed; no automatic upload retry")
+            self.publish_failure(error,'upload',scene_id=scene_id,expected_checksum=checksum,asset_bytes=len(data),
+                outgoing_header_unverified={'type':data[5],'width':int.from_bytes(data[8:10],'little'),
+                    'height':int.from_bytes(data[10:12],'little'),'payload_crc':int.from_bytes(data[16:20],'little')} if len(data)>=24 else None,
+                committed_id=result[0] if result else None,
+                state=f'Сцена {result[0]} записана и подтверждена. Не удалось обновить данные после записи; повторять загрузку не нужно.' if result else None)
             self.disconnect()
-            self.error.emit(user_error(error) + " Загрузка не подтверждена. После подключения проверь список сцен; автоматического повтора нет.")
+            self.error.emit(user_error(error) + (f' Сцена {result[0]} записана и подтверждена; не удалось обновить preview. Повторять запись не нужно.' if result else
+                " Загрузка не подтверждена. После подключения проверь список сцен; автоматического повтора нет."))
             self.upload_failed.emit()
         finally:
             self.timer.start()
@@ -177,6 +202,7 @@ class DeviceWorker(QObject):
         if cancel.is_set() or self.cancelled():
             return
         if self.client is None or self.last is None or self.last.port != key[0]:
+            self.publish_failure(FileNotFoundError('Device not connected'),'preview',scene_key=key)
             self.preview_failed.emit(key, "Заколка не подключена.")
             return
         self.timer.stop()
@@ -193,6 +219,7 @@ class DeviceWorker(QObject):
             pass
         except Exception as error:
             log.exception("Read preview failed")
+            self.publish_failure(error,'preview',scene_key=key)
             self.preview_failed.emit(key, user_error(error))
         finally:
             self.timer.start()
@@ -200,11 +227,13 @@ class DeviceWorker(QObject):
     @Slot(object)
     def change_scene(self, request):
         if self.client is None:
+            self.publish_failure(FileNotFoundError('Device not connected'),'scene',request=request)
             self.error.emit("Заколка не найдена. Подключи её по USB-C.")
             self.scene_failed.emit()
             return
         self.timer.stop()
         self.status.emit("● обновляю сцену...")
+        result=None
         try:
             action, scene_id, checksum, expected_port = request[:4]
             if self.client.transport.port != expected_port:
@@ -222,6 +251,8 @@ class DeviceWorker(QObject):
             self.scene_done.emit(result)
         except Exception as error:
             log.exception("Scene operation failed; no automatic retry")
+            self.publish_failure(error,'scene',request=request,
+                state='Изменение подтверждено заколкой. Не удалось обновить preview; повторять запись не нужно.' if result else None)
             self.disconnect()
             self.error.emit(user_error(error))
             self.scene_failed.emit()
@@ -243,11 +274,13 @@ class DeviceWorker(QObject):
             self.collection_ready.emit(collection)
         except Exception as error:
             log.exception("Collection export failed")
+            self.publish_failure(error,'export',selected_id=selected_id)
             self.collection_failed.emit(user_error(error))
 
     @Slot(object)
     def restore_collection(self, request):
         plan, folder, cancel = request
+        completed=False
         if self.timer:
             self.timer.stop()
         try:
@@ -272,12 +305,15 @@ class DeviceWorker(QObject):
             self.status.emit("● восстанавливаю коллекцию...")
             self.last = execute_restore(self.client, plan, ready, self.progress.emit,
                                         lambda: cancel.is_set() or self.cancelled())
+            completed=True
             self.snapshot_ready.emit(self.last)
             self.preload(self.last)
             self.restore_done.emit(self.last)
             self.status.emit("● коллекция восстановлена")
         except Exception as error:
             log.exception("Collection restore stopped; no automatic retry")
+            self.publish_failure(error,'restore',backup_folder=str(folder),
+                state='Все шаги восстановления подтверждены. Не удалось обновить preview; повторять восстановление не нужно.' if completed else None)
             self.disconnect()
             if isinstance(error, RestoreFailure):
                 message = user_error(error.error) + " " + str(error)
@@ -310,6 +346,8 @@ class DeviceWorker(QObject):
             self.playlist_ready.emit(self.client.get_playlist())
         except Exception as error:
             log.exception("Playlist operation failed; no automatic retry")
+            self.publish_failure(error,'playlist',write_requested=request[0] is not None,
+                state='Чтение настроек не изменяло плейлист или сцены.' if request[0] is None else None)
             self.playlist_failed.emit(user_error(error) + " При обрыве записи проверь настройки после подключения; повтора нет.")
         finally:
             self.timer.start()

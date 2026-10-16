@@ -19,4 +19,6 @@ bool display_update_rgb565_stream(FILE *file, uint16_t width, uint16_t height);
 bool display_update_rgb565_at(FILE *file, uint16_t width, uint16_t height, int x, int y);
 bool display_draw_transition(FILE *file, uint16_t width, uint16_t height, uint8_t effect);
 void display_show_text(const char *first_line, const char *second_line);
+bool display_update_decoded(bool (*read)(void *, uint8_t *, size_t), void *context,
+                            uint16_t width, uint16_t height, int x, int y);
 

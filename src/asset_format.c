@@ -2,6 +2,7 @@
 
 #include "asset_format.h"
 #include "wire.h"
+#include "compression.h"
 
 AssetStatus asset_parse_header(const uint8_t data[ASSET_HEADER_SIZE],
                                uint32_t file_size, AssetHeader *out)
@@ -35,13 +36,18 @@ bool asset_validate_bytes(const uint8_t *data, size_t size, AssetHeader *out)
     if (header.type == ASSET_TYPE_ANIMATION) {
         const uint8_t *p = data + 24;
         if (header.payload_size < 16) return false;
+        if (p[3]==1) {
+            if (!compression_validate_bytes(data,size,&header)) return false;
+            if (out) *out=header;
+            return true;
+        }
         const uint16_t count = wire_u16(p);
         const uint32_t bytes = (uint32_t)header.width * header.height * 2;
         const uint32_t minimum = header.width <= 96 && header.height <= 96 ? 170 :
                                  (header.width <= 128 && header.height <= 128 ? 250 : 350);
-        if (count < 2 || count > 128 || p[2] || p[3] || wire_u32(p + 12) ||
+        if (count < 2 || p[2] || p[3] || wire_u32(p + 12) ||
             wire_u16(p + 4) > 320U - header.width || wire_u16(p + 6) > 172U - header.height ||
-            wire_u32(p + 8) != bytes || header.payload_size != 16U + count * (12U + bytes)) return false;
+            wire_u32(p + 8) != bytes || header.payload_size != 16ULL + (uint64_t)count * (12ULL + bytes)) return false;
         for (unsigned i = 0; i < count; ++i) {
             const uint8_t *entry = p + 16 + i * 12;
             const uint32_t offset = 16U + count * 12U + i * bytes;

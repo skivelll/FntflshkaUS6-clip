@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt,Slot
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QComboBox, QCheckBox, QPushButton, QDialogButtonBox
 from ..library.restore import make_plan
 
@@ -47,6 +47,10 @@ class RestoreDialog(QDialog):
         self.summary.setTextFormat(Qt.PlainText)
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
+        self.problem_button=QPushButton('? Почему восстановление недоступно?')
+        self.problem_button.hide();self.problem_button.clicked.connect(self.show_problem)
+        layout.addWidget(self.problem_button)
+        self.current_problem=None;self.problem_dialog=None
         warning = QLabel("Каждая сцена сохраняется отдельно. При обрыве уже завершённые шаги останутся, остальные не повторяются автоматически. Текущий незавершённый шаг нужно проверить по списку сцен.")
         warning.setWordWrap(True)
         layout.addWidget(warning)
@@ -74,7 +78,19 @@ class RestoreDialog(QDialog):
             self.summary.setText(f"Добавить: {additions}; заменить: {replacements}\n"
                 f"Оценка с запасом: ≈{self.plan.estimated_bytes:,} Б / свободно {self.snapshot.capabilities.storage_free:,} Б\n"
                 f"Порядок после применения metadata: {list(self.plan.final_order) if self.plan.metadata else 'сохранится текущий'}; ACTIVE {self.plan.active_id}.")
+            self.problem_button.hide()
         except ValueError as error:
             self.plan = None
             self.summary.setText(str(error))
+            from ..problems import problem
+            self.current_problem=problem(error,'validation',context={'collection':self.collection.title,'port':self.snapshot.port})
+            self.problem_button.show()
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(self.plan is not None)
+
+    @Slot()
+    def show_problem(self):
+        if self.current_problem is None:return
+        from .notifications import ProblemDialog
+        if self.problem_dialog is None:self.problem_dialog=ProblemDialog(self)
+        self.problem_dialog.display(self.current_problem,self.current_problem.report())
+        self.problem_dialog.show();self.problem_dialog.raise_()

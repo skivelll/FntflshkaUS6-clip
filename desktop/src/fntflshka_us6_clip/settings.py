@@ -12,6 +12,7 @@ class Preferences:
         self.store = QSettings(str(path), QSettings.IniFormat)
 
     def restore(self, window):
+        window.error_sound.setChecked(self.store.value('notifications/sound',False,type=bool))
         geometry = self.store.value("window/geometry")
         if isinstance(geometry, QByteArray):
             window.restoreGeometry(geometry)
@@ -25,9 +26,11 @@ class Preferences:
             window.image_folder = folder
 
     def save(self, window):
+        self.store.setValue('notifications/sound',window.error_sound.isChecked())
         self.store.setValue("window/geometry", window.saveGeometry())
         self.store.setValue("image/placement", json.dumps(window.editor_preferences or window.controls.preferences()))
         self.store.setValue("image/folder", window.image_folder)
         self.store.sync()
         if self.store.status() != QSettings.NoError:
             log.warning("Unable to save local preferences: %s", self.store.status())
+        return self.store.status()==QSettings.NoError

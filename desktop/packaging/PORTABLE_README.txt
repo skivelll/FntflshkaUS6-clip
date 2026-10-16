@@ -26,3 +26,6 @@ GIF требует firmware 1.6. При добавлении выбираетс�
 
 Сборка не подписана цифровой подписью. Windows может показать SmartScreen.
 Не отключай системную защиту. Проверяй источник сборки и build-info.json.
+
+Firmware1.7: fixed library budget820 KiB; more than8 scenes, safe replacement reserve.
+Legacy firmware remains supported within its original limits.

@@ -94,6 +94,7 @@ class LibraryDialog(QDialog):
         self.worker.loaded.connect(self.on_loaded)
         self.worker.saved.connect(self.on_saved)
         self.worker.error.connect(self.status.setText)
+        self.worker.failure.connect(self.owner.notifications.present)
         self.worker.done.connect(self.on_file_done)
         self.thread.start()
         self.file_job("list", None)
@@ -115,6 +116,7 @@ class LibraryDialog(QDialog):
     def file_job(self, action, payload):
         if self.io_busy or self.closing:
             return
+        self.owner.notifications.recovered('library')
         self.io_busy = True
         self.update_actions()
         self.request_file.emit((action, payload))
@@ -177,7 +179,8 @@ class LibraryDialog(QDialog):
 
     def select_scene(self, row):
         if 0 <= row < len(self.previews):
-            if isinstance(self.previews[row], tuple):
+            from ..media.animation import AnimationPreview
+            if isinstance(self.previews[row], (tuple, AnimationPreview)):
                 self.preview.set_animation(self.previews[row])
             else:
                 self.preview.set_image(self.previews[row])
@@ -185,6 +188,7 @@ class LibraryDialog(QDialog):
             self.preview.clear_image()
 
     def on_saved(self, path):
+        self.owner.notifications.recovered('library')
         self.notice = "Архив сохранён: " + str(path)
         self.status.setText(self.notice)
         if Path(path).parent == self.folder:
@@ -194,6 +198,7 @@ class LibraryDialog(QDialog):
     def backup(self, selected_id):
         if not self.owner.snapshot or not self.title.text().strip():
             self.status.setText("Подключи плату и задай название коллекции.")
+            self.owner.notify_error(ValueError(self.status.text()),'validation')
             return
         self.serial_busy = True
         self.notice = None
@@ -212,6 +217,7 @@ class LibraryDialog(QDialog):
         if accepted:
             if snapshot != self.owner.snapshot:
                 self.status.setText("Список сцен или подключение изменились. Выбери сцену заново.")
+                self.owner.notify_error(ValueError(self.status.text()),'validation')
                 return
             self.backup(snapshot.scenes[labels.index(label)].id)
 
@@ -247,6 +253,7 @@ class LibraryDialog(QDialog):
             self.begin_restore(dialog.plan)
 
     def begin_restore(self, plan):
+        self.owner.notifications.recovered('restore')
         self.cancel = Event()
         self.serial_busy = True
         self.notice = None

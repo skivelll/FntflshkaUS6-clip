@@ -24,7 +24,7 @@ def main() -> None:
     if not all((cjson / name).is_file() for name in ("cJSON.c", "cJSON.h")):
         parser.exit(2, "cJSON sources not found; build firmware first or pass --cjson DIRECTORY.\n")
     suites = {
-        "foundation": ["tests/foundation_test.c", "src/wire.c", "src/asset_format.c",
+        "foundation": ["tests/foundation_test.c", "src/wire.c", "src/asset_format.c", "src/compression.c",
                        "src/protocol.c", "src/manifest.c", "src/upload_guard.c", str(cjson / "cJSON.c")],
         "modes": ["tests/modes_test.c", "src/modes.c", "src/assets.c"],
         "playlist": ["tests/playlist_test.c", "src/playlist.c", "src/wire.c"],

@@ -15,6 +15,15 @@ class StorageBar(QWidget):
         self.projection = projection
         if projection:
             p = projection
+            if p.library:
+                text = (f"Библиотека: {p.used:,} / {p.total:,} Б (файлы округлены до блоков 4096 Б). "
+                        f"Свободно под контент {p.free:,} Б. После операции ≈{p.projected_free:,} Б. "
+                        f"Физически свободно {p.physical_free:,} Б; служебный запас {p.reserve:,} Б. "
+                        "При замене старая копия сохраняется до commit; резерв не является местом под контент.")
+                self.setToolTip(text)
+                self.setAccessibleDescription(text)
+                self.update()
+                return
             text = f"Занято {p.used:,} Б; свободно {p.free:,} Б из {p.total:,} Б."
             if p.upload:
                 text += f" Розовый: новый файл {p.upload:,} Б, без вычитания старого A/B. Служебный запас — ещё 8192 Б."
@@ -36,10 +45,13 @@ class StorageBar(QWidget):
             def fill(start, count, color):
                 painter.fillRect(QRectF(rect.left() + rect.width() * start / p.total, rect.top(),
                                         rect.width() * count / p.total, rect.height()), QColor(color))
-            fill(0, p.used, "#756C7E")
+            fill(0, min(p.used, p.total), "#756C7E")
             if p.reclaim:
-                fill(p.used - p.reclaim, p.reclaim, "#65C7BA")
+                start = max(0, min(p.total, p.used - p.reclaim))
+                fill(start, min(p.reclaim, p.total - start), "#65C7BA")
             if p.upload:
-                fill(p.used, min(p.upload, p.free), "#E98CBC" if p.upload + 8192 <= p.free else "#E46B77")
+                start = min(p.total, max(0, p.used - (p.reclaim if p.library else 0)))
+                fits = p.used - p.reclaim + p.upload <= p.total if p.library else p.upload + p.reserve <= p.free
+                fill(start, min(p.upload, p.total - start), "#E98CBC" if fits else "#E46B77")
         painter.setPen(QColor("#66527B"))
         painter.drawRect(rect)

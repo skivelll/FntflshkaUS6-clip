@@ -53,7 +53,7 @@ class AnimationTests(unittest.TestCase):
 
     def test_no_silent_truncation_and_file_cap(self):
         with self.assertRaises(ValueError):
-            encode_animation([Image.new('RGB', (320, 172))] * 5, [350] * 5)
+            encode_animation([Image.new('RGB', (320, 172))] * 8, [350] * 8)
         with self.assertRaises(ValueError): encode_animation([Image.new('RGB', (1, 1))], [350])
 
     def test_static_codec_stays_identical(self):
@@ -131,6 +131,26 @@ class AnimationTests(unittest.TestCase):
 
 
 class AnimationGuiTests(unittest.TestCase):
+    def test_large_source_gif_selected_eight_frames_and_step_timing(self):
+        from fntflshka_us6_clip.ui.gif_dialog import gif_frame_count
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'large.gif'
+            frames = [Image.new('RGB',(1000,1000),(i*7,0,0)) for i in range(34)]
+            frames[0].save(path,save_all=True,append_images=frames[1:],duration=100,optimize=False)
+            del frames
+            self.assertEqual(gif_frame_count(path),34)
+            with self.assertRaisesRegex(ValueError,'32 MP'):
+                load_gif(path)
+            request = GifSource(path,'compact',0,8,1)
+            loaded = load_gif(path,request)
+            self.assertEqual(len(loaded[0]),8)
+            prepared = prepare_gif(loaded,replace(request,first=0,last=0,step=1),Placement())
+            self.assertEqual(len(parse_asset(prepared.asset)['frames']),8)
+            request = GifSource(path,'compact',2,10,3)
+            loaded = load_gif(path,request)
+            self.assertEqual(loaded[1],(300,300,200))
+            self.assertEqual([frame.getpixel((0,0))[0] for frame in loaded[0]],[14,35,56])
+
     @classmethod
     def setUpClass(cls):
         from PySide6.QtWidgets import QApplication
@@ -150,7 +170,54 @@ class AnimationGuiTests(unittest.TestCase):
                 self.assertEqual(spin.value(),before+1)
                 QTest.mouseClick(dialog.findChild(QPushButton,f'gif_{name}_down'),Qt.LeftButton)
                 self.assertEqual(spin.value(),before)
+            dialog.first.setValue(501)
+            dialog.last.setValue(1000)
+            dialog.step.setValue(250)
+            self.assertEqual(dialog.options(), ('compact', 500, 1000, 250))
         finally: dialog.close()
+
+    def test_gif_memory_updates_for_range_profile_and_available_space(self):
+        from fntflshka_us6_clip.ui.gif_dialog import GifDialog
+        caps = DeviceClient(MockTransport(budget=True)).snapshot().capabilities
+        caps = replace(caps, library_used=700*1024)
+        dialog = GifDialog(None, frame_count=30, caps=caps)
+        try:
+            self.assertIn("30 из 30", dialog.memory.text())
+            self.assertIn("Превышен предел файла", dialog.memory.text())
+            self.assertFalse(dialog.prepare_button.isEnabled())
+            dialog.last.setValue(4)
+            self.assertIn("Не помещается в библиотеку", dialog.memory.text())
+            dialog.step.setValue(2)
+            self.assertIn("2 из 30", dialog.memory.text())
+            self.assertIn("Помещается", dialog.memory.text())
+            self.assertTrue(dialog.prepare_button.isEnabled())
+            dialog.mode.setCurrentIndex(dialog.mode.findData('full'))
+            self.assertFalse(dialog.prepare_button.isEnabled())
+            dialog.caps = replace(caps, library_used=0, storage_free=100*1024)
+            dialog.update_memory()
+            self.assertIn("Для безопасной записи", dialog.memory.text())
+            self.assertFalse(dialog.prepare_button.isEnabled())
+        finally:
+            dialog.close()
+
+    def test_gif_memory_replacement_credit_and_offline(self):
+        from fntflshka_us6_clip.ui.gif_dialog import GifDialog, gif_frame_count
+        caps = DeviceClient(MockTransport(budget=True)).snapshot().capabilities
+        caps = replace(caps, library_used=caps.library_limit)
+        dialog = GifDialog(None, frame_count=2, caps=caps, old_size=70000)
+        try:
+            self.assertTrue(dialog.prepare_button.isEnabled())
+            dialog.caps = None
+            dialog.update_memory()
+            self.assertIn("доступное место неизвестно", dialog.memory.text())
+            dialog.first.setValue(2)
+            self.assertFalse(dialog.prepare_button.isEnabled())
+        finally:
+            dialog.close()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'frames.gif'
+            Image.new('RGB',(2,2),'red').save(path,save_all=True,append_images=[Image.new('RGB',(2,2),'blue')])
+            self.assertEqual(gif_frame_count(path), 2)
 
     def test_choose_both_profiles_upload_and_cached_animation(self):
         from fntflshka_us6_clip.ui.main_window import MainWindow

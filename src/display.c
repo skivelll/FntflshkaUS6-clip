@@ -148,6 +148,19 @@ bool display_update_rgb565_at(FILE *file, uint16_t width, uint16_t height, int x
 }
 
 // Compose only a newly revealed rectangle into the same 5120-byte DMA strip.
+bool display_update_decoded(bool (*read)(void *, uint8_t *, size_t), void *context,
+                            uint16_t width, uint16_t height, int x, int y)
+{
+    if (!read || !width || !height || x<0 || y<0 || x+width>DISPLAY_WIDTH || y+height>DISPLAY_HEIGHT) return false;
+    for (int row=0;row<height;row+=LCD_STRIP_HEIGHT) {
+        const int rows=height-row<LCD_STRIP_HEIGHT ? height-row : LCD_STRIP_HEIGHT;
+        if (!read(context,(uint8_t *)strip,(size_t)width*rows*2)) return false;
+        draw_strip(x,y+row,width,rows);
+    }
+    return true;
+}
+
+// Compose only a newly revealed rectangle into the same 5120-byte DMA strip.
 // The old scene remains in LCD RAM; no second scene/full-screen buffer is needed.
 static bool reveal_rect(FILE *file, long payload, int width, int height,
                         int left, int top, int rect_width, int rect_height)

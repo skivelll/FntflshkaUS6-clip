@@ -1,6 +1,8 @@
 from PySide6.QtCore import Qt, QRectF, Signal, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
+from time import monotonic
+import math
 
 
 class Preview(QWidget):
@@ -17,6 +19,7 @@ class Preview(QWidget):
         self.animation_index = 0
         self.animation_timer = QTimer(self)
         self.animation_timer.setSingleShot(True)
+        self.animation_timer.setTimerType(Qt.PreciseTimer)
         self.animation_timer.timeout.connect(self.advance_frame)
         self.setMinimumSize(320, 220)
         self.interactive = False
@@ -86,24 +89,36 @@ class Preview(QWidget):
                             QImage.Format_RGB888).copy()
         self.update()
 
-    def set_animation(self, frames):
+    def set_animation(self, frames, start_index=0):
         if not frames:
             self.clear_image()
             return
-        self.set_image(frames[0][0])
+        start_index=max(0,min(len(frames)-1,start_index))
+        self.set_image(frames[start_index][0])
         self.animation = frames
-        self.animation_index = 0
+        self.animation_index = start_index
+        self.animation_durations=tuple(ms for _,ms in getattr(frames,'frames',frames))
+        self.animation_cycle=sum(self.animation_durations)/1000
+        self.animation_deadline=monotonic()+self.animation_durations[start_index]/1000
         if self.isVisible():
-            self.animation_timer.start(frames[0][1])
+            self.animation_timer.start(frames[start_index][1])
 
     def advance_frame(self):
         if not self.animation:
             return
         frames = self.animation
         index = (self.animation_index + 1) % len(frames)
+        now=monotonic()
+        deadline=self.animation_deadline+self.animation_durations[index]/1000
+        if now>=deadline:
+            deadline+=int((now-deadline)/self.animation_cycle)*self.animation_cycle
+            while deadline<=now:
+                index=(index+1)%len(frames)
+                deadline+=self.animation_durations[index]/1000
         self.set_image(frames[index][0])
         self.animation, self.animation_index = frames, index
-        self.animation_timer.start(frames[index][1])
+        self.animation_deadline=deadline
+        self.animation_timer.start(max(1,math.ceil((deadline-monotonic())*1000)))
 
     def hideEvent(self, event):
         self.animation_timer.stop()
@@ -112,6 +127,7 @@ class Preview(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         if self.animation:
+            self.animation_deadline=monotonic()+self.animation_durations[self.animation_index]/1000
             self.animation_timer.start(self.animation[self.animation_index][1])
 
     def clear_image(self):

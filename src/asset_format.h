@@ -12,7 +12,8 @@
 #define ASSET_MAX_WIDTH 320U
 #define ASSET_MAX_HEIGHT 172U
 #define ASSET_MAX_PAYLOAD (ASSET_MAX_WIDTH * ASSET_MAX_HEIGHT * 2U)
-#define ASSET_MAX_FILE (512U * 1024U)
+#include "capacity.h"
+#define ASSET_MAX_FILE LIBRARY_MAX_BYTES
 
 typedef struct {
     uint16_t width;

@@ -84,6 +84,7 @@ class PlaylistDialog(QDialog):
         owner.device_worker.playlist_ready.connect(self.loaded)
         owner.device_worker.playlist_failed.connect(self.failed)
         self.pending = True
+        self.owner.notifications.recovered('playlist')
         owner.request_playlist.emit((None, self.baseline))
 
     def move(self, delta):
@@ -97,6 +98,7 @@ class PlaylistDialog(QDialog):
             self.scenes.setCurrentRow(target)
 
     def loaded(self, value):
+        self.owner.notifications.recovered('playlist')
         was_save = self.pending and self.save_button.isEnabled()
         self.pending = False
         self.scenes.clear()
@@ -140,15 +142,17 @@ class PlaylistDialog(QDialog):
         value = Playlist(self.enabled.isChecked(), self.interval.value() * 1000, ids,
                          self.transition.currentIndex())
         try:
-            value.encode()
+            value.encode_extended() if self.baseline.capabilities.supports_library_budget else value.encode()
         except ValueError as error:
             self.message.setText(str(error))
+            self.owner.notify_error(error,'validation')
             return
         if QMessageBox.question(self, "Сохранить плейлист?", "Записать порядок, интервал и режим воспроизведения на заколку? Сами картинки не изменятся.",
                                 QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
             return
         self.pending = True
         self.close_button.setEnabled(False)
+        self.owner.notifications.recovered('playlist')
         self.message.setText("Сохраняю…")
         self.owner.request_playlist.emit((value, self.baseline))
 

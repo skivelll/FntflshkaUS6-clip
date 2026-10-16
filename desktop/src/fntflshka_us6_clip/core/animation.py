@@ -3,7 +3,9 @@ import struct
 import zlib
 from .asset import rgb565_payload
 
-MAX_FILE = 512 * 1024
+from .capacity import LIBRARY_MAX, MAX_FRAMES
+
+MAX_FILE = LIBRARY_MAX
 PREFIX = struct.Struct("<HBBhhII")
 ENTRY = struct.Struct("<III")
 
@@ -15,8 +17,11 @@ def minimum_duration(width, height):
 def parse_animation(data, width, height, size, crc):
     if len(data) > MAX_FILE or len(data) != 24 + size or size < 16:
         raise ValueError("invalid animation length")
+    if data[27] == 1:
+        from .compression import parse_compressed
+        return parse_compressed(data,width,height,size,crc)
     count, loop, reserved, x, y, frame_bytes, tail = PREFIX.unpack_from(data, 24)
-    if (not 2 <= count <= 128 or loop or reserved or tail or frame_bytes != width * height * 2
+    if (not 2 <= count <= MAX_FRAMES or loop or reserved or tail or frame_bytes != width * height * 2
             or not 0 <= x <= 320 - width or not 0 <= y <= 172 - height
             or size != 16 + count * (12 + frame_bytes)):
         raise ValueError("invalid animation index")
@@ -35,15 +40,15 @@ def parse_animation(data, width, height, size, crc):
 
 
 def encode_animation(frames, durations, origin=None):
-    if not 2 <= len(frames) <= 128 or len(frames) != len(durations):
-        raise ValueError("Для анимации нужно 2–128 кадров.")
+    if not 2 <= len(frames) <= MAX_FRAMES or len(frames) != len(durations):
+        raise ValueError("Для анимации нужно не менее двух кадров в пределах размера файла.")
     width, height = frames[0].size
     if not 1 <= width <= 320 or not 1 <= height <= 172 or any(f.size != (width, height) for f in frames):
         raise ValueError("Неверные размеры кадров.")
     frame_bytes = width * height * 2
     size = 16 + len(frames) * (12 + frame_bytes)
     if size + 24 > MAX_FILE:
-        raise ValueError("Анимация больше 512 KiB. Сократи диапазон кадров или выбери компактный размер.")
+        raise ValueError("Анимация больше 820 KiB. Сократи диапазон кадров или выбери компактный размер.")
     x, y = origin or ((320 - width) // 2, (172 - height) // 2)
     if not 0 <= x <= 320 - width or not 0 <= y <= 172 - height:
         raise ValueError("Анимация должна помещаться на LCD.")

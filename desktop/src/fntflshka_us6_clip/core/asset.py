@@ -1,3 +1,4 @@
+from .capacity import LIBRARY_MAX
 """Shared asset v1 codec; no Qt dependency."""
 import struct
 import zlib
@@ -37,8 +38,8 @@ def encode_asset(image: Image.Image, background: tuple[int, int, int] = (0, 0, 0
 
 
 def parse_asset(data: bytes) -> dict[str, int]:
-    if len(data) > 512 * 1024:
-        raise ValueError("asset exceeds 512 KiB")
+    if len(data) > LIBRARY_MAX:
+        raise ValueError("asset exceeds 820 KiB")
     if len(data) < HEADER.size:
         raise ValueError("asset header is incomplete")
     magic, version, kind, pixel_format, reserved, width, height, size, crc, header_crc = HEADER.unpack_from(data)
@@ -58,5 +59,8 @@ def parse_asset(data: bytes) -> dict[str, int]:
 
 def first_frame(data):
     info = parse_asset(data)
+    if info.get('encoding') == 1:
+        from .compression import decoded_frames
+        return next(decoded_frames(data,info))[0]
     offset = info["frames"][0][0] if info.get("type") == 2 else 24
     return data[offset:offset + info["width"] * info["height"] * 2]

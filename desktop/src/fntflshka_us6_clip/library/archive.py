@@ -9,11 +9,14 @@ import stat
 import tempfile
 import zipfile
 from ..core.asset import parse_asset
+from ..core.capacity import LIBRARY_MAX, MAX_SCENES, MAX_ID
+from ..core.capacity import LIBRARY_MAX, MAX_SCENES, MAX_ID
 
 FORMAT = "fntflshka-us6-clip-collection"
-MAX_ARCHIVE = 8 * 512 * 1024 + 65536
-MAX_MANIFEST = 16384
-MAX_ASSET = 512 * 1024
+MAX_ARCHIVE = 5 * 1024 * 1024
+MAX_CONTENT = 4 * 1024 * 1024
+MAX_MANIFEST = 65536
+MAX_ASSET = LIBRARY_MAX
 
 
 @dataclass(frozen=True)
@@ -40,11 +43,15 @@ def validate(collection):
     if (len(collection.display) != 2 or any(type(v) is not int for v in collection.display)
             or not 1 <= collection.display[0] <= 320 or not 1 <= collection.display[1] <= 172):
         raise ValueError("Неверный экран коллекции.")
-    if not 1 <= len(collection.scenes) <= 8:
-        raise ValueError("В коллекции должно быть 1–8 сцен.")
+    if not 1 <= len(collection.scenes) <= MAX_SCENES:
+        raise ValueError("Количество сцен превышает безопасный бюджет коллекции.")
+    if sum(len(s.asset) for s in collection.scenes) > MAX_CONTENT:
+        raise ValueError("Collection content exceeds 4 MiB")
+    if sum(len(s.asset) for s in collection.scenes) > MAX_CONTENT:
+        raise ValueError("Collection content exceeds 4 MiB")
     ids = set()
     for scene in collection.scenes:
-        if type(scene.id) is not int or not 1 <= scene.id <= 8 or scene.id in ids:
+        if type(scene.id) is not int or not 1 <= scene.id <= MAX_ID or scene.id in ids:
             raise ValueError("Неверные или повторные ID сцен в архиве.")
         ids.add(scene.id)
         if not isinstance(scene.title, str) or len(scene.title.encode("utf-8")) > 48 or any(ord(c) < 32 or ord(c) == 127 for c in scene.title):
@@ -106,8 +113,12 @@ def decode(data):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
             names = [i.filename for i in infos]
-            if not 2 <= len(infos) <= 9 or len(set(names)) != len(names) or "collection.json" not in names:
+            if not 2 <= len(infos) <= MAX_SCENES + 1 or len(set(names)) != len(names) or "collection.json" not in names:
                 raise ValueError("Неверный состав архива.")
+            if sum(i.file_size for i in infos) > MAX_CONTENT + MAX_MANIFEST:
+                raise ValueError("Archive decompressed content exceeds budget")
+            if sum(i.file_size for i in infos) > MAX_CONTENT + MAX_MANIFEST:
+                raise ValueError("Archive decompressed content exceeds budget")
             for info in infos:
                 limit = MAX_MANIFEST if info.filename == "collection.json" else MAX_ASSET
                 if (info.file_size > limit or info.flag_bits & 1 or stat.S_ISLNK(info.external_attr >> 16)
@@ -117,12 +128,12 @@ def decode(data):
             if manifest["format"] != FORMAT or type(manifest["version"]) is not int or manifest["version"] != 1:
                 raise ValueError("Неподдерживаемая версия desktop-коллекции.")
             records = manifest["scenes"]
-            if not isinstance(records, list) or not 1 <= len(records) <= 8:
+            if not isinstance(records, list) or not 1 <= len(records) <= MAX_SCENES:
                 raise ValueError("Неверный список сцен архива.")
             scenes, expected = [], {"collection.json"}
             for index, record in enumerate(records):
                 scene_id = record["id"]
-                if type(scene_id) is not int or not 1 <= scene_id <= 8 or type(record["order"]) is not int or record["order"] != index:
+                if type(scene_id) is not int or not 1 <= scene_id <= MAX_ID or type(record["order"]) is not int or record["order"] != index:
                     raise ValueError("Неверные ID или порядок архива.")
                 path = f"assets/{scene_id:04}.bin"
                 if record["asset"] != path:

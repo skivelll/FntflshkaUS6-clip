@@ -52,17 +52,25 @@ class ClipDevice:
 
     def request(self, command: int, payload: bytes = b"", timeout: float = 5) -> bytes:
         self.sequence = (self.sequence + 1) & 0xFFFF
+        self.last_request={'command':command,'sequence':self.sequence,'payload_length':len(payload),'port':self.port}
         self.serial.write(encode_packet(command, self.sequence, payload))
         deadline = time.monotonic() + timeout
         while True:
-            reply, sequence, data = self.read_packet(deadline)
+            try:
+                reply, sequence, data = self.read_packet(deadline)
+            except TimeoutError as error:
+                error.command=command;error.sequence=self.sequence;error.port=self.port
+                raise
             if sequence != self.sequence or reply not in (0x80, 0x81):
                 continue
             if not data or data[0] != command:
                 raise ValueError("reply command mismatch")
             if reply == 0x81:
                 code = data[1] if len(data) > 1 else -1
-                raise DeviceNack(code)
+                error=DeviceNack(code)
+                error.command=command;error.sequence=self.sequence;error.port=self.port
+                raise error
+            self.last_ack={'command':command,'sequence':self.sequence,'port':self.port}
             return data[1:]
 
 

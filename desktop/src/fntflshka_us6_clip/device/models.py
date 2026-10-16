@@ -17,6 +17,17 @@ class Capabilities:
     max_asset_size: int
     max_upload_chunk: int
     render_buffer_size: int
+    library_limit: int = 0
+    library_used: int = 0
+    service_reserve: int = 8192
+    allocation_block: int = 1
+    scene_limit: int = 8
+    id_limit: int = 8
+    library_revision: int = 0
+
+    @property
+    def supports_library_budget(self):
+        return bool(self.reserved & 64)
 
     @property
     def supports_scene_read(self):
@@ -41,6 +52,10 @@ class Capabilities:
     @property
     def supports_animation(self):
         return bool(self.reserved & 32)
+
+    @property
+    def supports_compression(self):
+        return bool(self.reserved & 128)
 
     @classmethod
     def decode(cls, data):
